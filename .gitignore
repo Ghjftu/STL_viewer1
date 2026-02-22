@@ -1,0 +1,4 @@
+echo "postgres_data/" >> .gitignore
+echo ".DS_Store" >> .gitignore
+echo "node_modules" >> .gitignore
+echo ".env" >> .gitignore

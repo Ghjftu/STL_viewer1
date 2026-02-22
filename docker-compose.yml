@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # 1. База данных
+  db:
+    image: postgres:15-alpine
+    container_name: stl_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: rootpassword
+      POSTGRES_DB: stl_viewer_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # 2. PgAdmin (Интерфейс для БД)
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: stl_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: rootpassword
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+
+  # 3. Бэкенд (Node.js API)
+  server:
+    build: ./server
+    container_name: stl_server
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      # ВАЖНО: Внутри докера хост базы данных это имя сервиса 'db', а не localhost
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=admin
+      - DB_PASSWORD=rootpassword
+      - DB_NAME=stl_viewer_db
+      
+    volumes:
+      # Пробрасываем папку storage, чтобы загруженные файлы не пропадали при перезапуске
+      - ./server/storage:/app/storage
+      # (Опционально) Пробрасываем uploads, если вы используете её
+      - ./server/uploads:/app/uploads
+    depends_on:
+      - db
+
+  # 4. Фронтенд (React + Nginx)
+  client:
+    build: ./client
+    container_name: stl_client
+    restart: always
+    ports:
+      - "3000:80" # В браузере будете открывать http://localhost:3000
+    depends_on:
+      - server

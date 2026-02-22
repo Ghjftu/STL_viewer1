@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "es2020",             /* Версия JavaScript, в которую будет компилироваться код */
+    "module": "commonjs",           /* Стандарт модулей для Node.js */
+    "rootDir": "./src",             /* Где лежат исходники */
+    "moduleResolution": "node",     /* Алгоритм поиска модулей (как в Node) */
+    "baseUrl": "./src",             /* Базовый путь для импортов */
+    "outDir": "./dist",             /* Куда складывать скомпилированный JS */
+    "esModuleInterop": true,        /* Позволяет делать import express from 'express' */
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,                 /* Строгий режим (защита от ошибок типов) */
+    "skipLibCheck": true            /* Ускоряет компиляцию, пропуская проверку библиотек */
+  },
+  "include": ["src/**/*"],          /* Какие файлы компилировать */
+  "exclude": ["node_modules"]       /* Какие игнорировать */
+}
