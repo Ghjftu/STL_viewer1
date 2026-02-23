@@ -6,8 +6,6 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
 // --- КОМПОНЕНТ ДЛЯ ОТСЛЕЖИВАНИЯ КАМЕРЫ ---
-// Вместо вычисления зума, мы сохраняем ссылку на саму 3D камеру, 
-// чтобы делать точные математические расчеты из 2D в 3D.
 const CameraTracker = ({ cameraRef }: { cameraRef: React.MutableRefObject<THREE.OrthographicCamera | null> }) => {
   const { camera } = useThree();
   useEffect(() => {
@@ -138,16 +136,16 @@ export const Viewer3D: React.FC = () => {
   }, [id, navigate, location]);
 
   // --- 3. ТОЧНЫЙ 3D-РАСЧЕТ ИЗМЕРЕНИЙ ---
-  
+
   // Конвертация 2D пикселей экрана в 3D координаты мира
   const unprojectPoint = (p: Point): THREE.Vector3 => {
     if (!cameraRef.current || !svgRef.current) return new THREE.Vector3();
     const rect = svgRef.current.getBoundingClientRect();
-    
+
     // Нормализованные координаты устройства (от -1 до +1)
     const ndcX = (p.x / rect.width) * 2 - 1;
     const ndcY = -(p.y / rect.height) * 2 + 1;
-    
+
     // Проецируем вектор через матрицу камеры
     const vector = new THREE.Vector3(ndcX, ndcY, 0.5);
     vector.unproject(cameraRef.current);
@@ -157,22 +155,39 @@ export const Viewer3D: React.FC = () => {
   const calculateDistance = (p1: Point, p2: Point) => {
     const v1 = unprojectPoint(p1);
     const v2 = unprojectPoint(p2);
-    // Расстояние между векторами в 3D пространстве
-    return v1.distanceTo(v2).toFixed(1);
+    return v1.distanceTo(v2);
   };
 
   const calculateAngle = (p1: Point, p2: Point, p3: Point) => {
     const v1 = unprojectPoint(p1);
     const v2 = unprojectPoint(p2); // Центр угла
     const v3 = unprojectPoint(p3);
-    
-    // Вектора от центра к краям
+
     const vec1 = v1.clone().sub(v2);
     const vec2 = v3.clone().sub(v2);
-    
-    // Получаем угол и переводим в градусы
+
     const angleRad = vec1.angleTo(vec2);
-    return THREE.MathUtils.radToDeg(angleRad).toFixed(1);
+    return THREE.MathUtils.radToDeg(angleRad);
+  };
+
+  // Новая функция для вычисления диаметра окружности по трём точкам в 3D
+  const calculateCircleDiameter = (p1: Point, p2: Point, p3: Point): number => {
+    const v1 = unprojectPoint(p1);
+    const v2 = unprojectPoint(p2);
+    const v3 = unprojectPoint(p3);
+
+    const a = v2.distanceTo(v3);
+    const b = v1.distanceTo(v3);
+    const c = v1.distanceTo(v2);
+
+    const semiperimeter = (a + b + c) / 2;
+    const area = Math.sqrt(semiperimeter * (semiperimeter - a) * (semiperimeter - b) * (semiperimeter - c));
+
+    // Защита от коллинеарности (почти нулевая площадь)
+    if (area < 1e-6) return 0;
+
+    const R = (a * b * c) / (4 * area);
+    return 2 * R;
   };
 
   // --- 4. ОБРАБОТЧИКИ СОБЫТИЙ ДЛЯ РИСОВАНИЯ НА SVG ---
@@ -189,16 +204,21 @@ export const Viewer3D: React.FC = () => {
       if (currentPoints.length === 0) {
         setCurrentPoints([newPoint]);
       } else {
-        const dist = parseFloat(calculateDistance(currentPoints[0], newPoint));
-        setDrawings([...drawings, { type: 'ruler', points: [currentPoints[0], newPoint], value: dist }]);
+        const dist = calculateDistance(currentPoints[0], newPoint);
+        setDrawings([...drawings, { type: 'ruler', points: [currentPoints[0], newPoint], value: parseFloat(dist.toFixed(1)) }]);
         setCurrentPoints([]);
       }
     } else if (activeTool === 'circle') {
-      if (currentPoints.length === 0) {
-        setCurrentPoints([newPoint]); // центр
-      } else {
-        const radius = parseFloat(calculateDistance(currentPoints[0], newPoint));
-        setDrawings([...drawings, { type: 'circle', points: [currentPoints[0], newPoint], value: radius * 2 }]);
+      const newPoints = [...currentPoints, newPoint];
+      setCurrentPoints(newPoints);
+
+      if (newPoints.length === 3) {
+        const diameter = calculateCircleDiameter(newPoints[0], newPoints[1], newPoints[2]);
+        if (diameter > 0) {
+          setDrawings([...drawings, { type: 'circle', points: newPoints, value: parseFloat(diameter.toFixed(1)) }]);
+        } else {
+          console.warn('Точки коллинеарны, окружность не определена');
+        }
         setCurrentPoints([]);
       }
     } else if (activeTool === 'angle') {
@@ -206,8 +226,8 @@ export const Viewer3D: React.FC = () => {
       if (pts.length < 3) {
         setCurrentPoints(pts);
       } else {
-        const deg = parseFloat(calculateAngle(pts[0], pts[1], pts[2]));
-        setDrawings([...drawings, { type: 'angle', points: pts, value: deg }]);
+        const deg = calculateAngle(pts[0], pts[1], pts[2]);
+        setDrawings([...drawings, { type: 'angle', points: pts, value: parseFloat(deg.toFixed(1)) }]);
         setCurrentPoints([]);
       }
     }
@@ -241,6 +261,66 @@ export const Viewer3D: React.FC = () => {
       setCurrentPoints([]);
     } else {
       setDrawings((prev) => prev.slice(0, -1));
+    }
+  };
+
+  // Новая функция для очистки всех рисунков
+  const handleClearAll = () => {
+    if (window.confirm('Очистить все рисунки?')) {
+      setDrawings([]);
+      setCurrentPoints([]);
+    }
+  };
+
+  // Новая функция для кнопки "ГОТОВО"
+  const handleFinish = async () => {
+    if (drawings.length === 0) {
+      alert('Эскиз пуст. Добавьте измерения или рисунки перед сохранением.');
+      return;
+    }
+
+    if (!window.confirm('Завершить эскиз и сформировать ТЗ?')) return;
+
+    // Собираем данные камеры
+    const cameraState = cameraRef.current ? {
+      position: cameraRef.current.position.toArray(),
+      rotation: cameraRef.current.rotation.toArray(),
+      zoom: cameraRef.current.zoom
+    } : {};
+
+    // Забираем сырой SVG (векторы) для сохранения картинкой
+    const svgContent = svgRef.current ? svgRef.current.outerHTML : null;
+
+    const payload = {
+      cameraState,
+      canvasData: drawings,
+      svgContent
+    };
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:8000/api/projects/${id}/sketch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`, // Отправляем токен врача
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        alert('Эскиз сохранен и ТЗ сформировано!');
+        setDrawings([]);
+        setCurrentPoints([]);
+        // Если нужно, возвращаем врача на дашборд:
+        // navigate('/doctor'); 
+      } else {
+        const err = await response.json();
+        alert(`Ошибка: ${err.message}`);
+      }
+    } catch (error) {
+      console.error(error);
+      alert('Ошибка соединения с сервером');
     }
   };
 
@@ -338,7 +418,8 @@ export const Viewer3D: React.FC = () => {
               <span className="font-bold text-white text-sm">{project?.doctor_display_name}</span>
             </div>
 
-            <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 w-[95%] sm:w-auto bg-gray-800 rounded-2xl shadow-2xl border border-gray-700 p-2 flex flex-wrap justify-center items-center gap-2 z-20">
+            {/* Панель инструментов: на мобильных растянута на всю ширину, на sm центрирована */}
+            <div className="absolute bottom-6 left-4 right-4 sm:left-1/2 sm:transform sm:-translate-x-1/2 sm:w-auto bg-gray-800 rounded-2xl shadow-2xl border border-gray-700 p-2 flex flex-wrap justify-center items-center gap-2 z-20">
               {tools.map((tool) => (
                 <button
                   key={tool.id}
@@ -363,7 +444,8 @@ export const Viewer3D: React.FC = () => {
               ))}
 
               <div className="w-[1px] h-8 bg-gray-600 mx-1 sm:mx-2"></div>
-              
+
+              {/* Кнопка отмены последнего действия */}
               <button
                 onClick={handleUndoDraw}
                 className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-red-900/50 text-red-400 hover:bg-red-800/50 flex items-center justify-center transition"
@@ -372,8 +454,18 @@ export const Viewer3D: React.FC = () => {
                 ↩️
               </button>
 
+              {/* Новая кнопка очистки всех рисунков */}
               <button
-                onClick={() => alert('ТЗ сформировано!')}
+                onClick={handleClearAll}
+                className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-red-900/50 text-red-400 hover:bg-red-800/50 flex items-center justify-center transition"
+                title="Очистить всё"
+              >
+                🗑️
+              </button>
+
+              {/* Кнопка завершения / готово */}
+              <button
+                onClick={handleFinish}
                 className="px-3 sm:px-4 py-2 sm:py-0 h-10 sm:h-12 bg-green-600 hover:bg-green-500 text-white rounded-xl font-bold text-[10px] sm:text-xs"
               >
                 ГОТОВО
@@ -420,13 +512,42 @@ export const Viewer3D: React.FC = () => {
                 );
               }
               if (d.type === 'circle') {
-                const r = Math.sqrt(
-                  Math.pow(d.points[1].x - d.points[0].x, 2) + Math.pow(d.points[1].y - d.points[0].y, 2)
-                );
+                if (d.points.length < 3) return null;
+
+                const [p1, p2, p3] = d.points;
+
+                // Вычисление центра окружности по трём точкам (2D для отрисовки)
+                const D = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+
+                if (Math.abs(D) < 1e-10) return null;
+
+                const x1y1 = p1.x * p1.x + p1.y * p1.y;
+                const x2y2 = p2.x * p2.x + p2.y * p2.y;
+                const x3y3 = p3.x * p3.x + p3.y * p3.y;
+
+                const cx = (x1y1 * (p2.y - p3.y) + x2y2 * (p3.y - p1.y) + x3y3 * (p1.y - p2.y)) / D;
+                const cy = (x1y1 * (p3.x - p2.x) + x2y2 * (p1.x - p3.x) + x3y3 * (p2.x - p1.x)) / D;
+                const r = Math.sqrt(Math.pow(p1.x - cx, 2) + Math.pow(p1.y - cy, 2));
+
                 return (
                   <g key={i}>
-                    <circle cx={d.points[0].x} cy={d.points[0].y} r={r} stroke="#ef4444" strokeWidth="2" fill="none" />
-                    <text x={d.points[0].x} y={d.points[0].y} fill="#ef4444" fontSize="16" fontWeight="bold">
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={r}
+                      stroke="#ef4444"
+                      strokeWidth="2"
+                      fill="none"
+                    />
+                    <text
+                      x={cx}
+                      y={cy}
+                      fill="#ef4444"
+                      fontSize="16"
+                      fontWeight="bold"
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                    >
                       Ø {d.value}
                     </text>
                   </g>
@@ -467,8 +588,33 @@ export const Viewer3D: React.FC = () => {
             {activeTool === 'ruler' && currentPoints.length === 1 && (
               <circle cx={currentPoints[0].x} cy={currentPoints[0].y} r={3} fill="blue" />
             )}
-            {activeTool === 'circle' && currentPoints.length === 1 && (
-              <circle cx={currentPoints[0].x} cy={currentPoints[0].y} r={3} fill="red" />
+            {activeTool === 'circle' && currentPoints.length > 0 && (
+              <>
+                {currentPoints.map((p, idx) => (
+                  <circle key={idx} cx={p.x} cy={p.y} r={4} fill="red" stroke="white" strokeWidth="1" />
+                ))}
+                {currentPoints.length === 2 && (
+                  <line
+                    x1={currentPoints[0].x}
+                    y1={currentPoints[0].y}
+                    x2={currentPoints[1].x}
+                    y2={currentPoints[1].y}
+                    stroke="red"
+                    strokeWidth="1"
+                    strokeDasharray="4 4"
+                  />
+                )}
+                <text
+                  x={currentPoints[currentPoints.length - 1].x + 10}
+                  y={currentPoints[currentPoints.length - 1].y - 10}
+                  fill="white"
+                  fontSize="12"
+                  stroke="black"
+                  strokeWidth="0.5"
+                >
+                  {3 - currentPoints.length} 
+                </text>
+              </>
             )}
             {activeTool === 'angle' &&
               currentPoints.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={3} fill="yellow" />)}

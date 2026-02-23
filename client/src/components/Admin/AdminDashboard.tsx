@@ -103,19 +103,26 @@ export const AdminDashboard: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-100 text-black font-sans relative">
       <nav className="bg-slate-800 text-white p-4 flex justify-between items-center shadow-md">
-        <h1 className="text-xl font-bold tracking-tight">STL PRO <span className="text-blue-400">ADMIN</span></h1>
+        <h1 className="text-xl font-bold tracking-tight">STL_Viewer <span className="text-blue-400">ADMIN</span></h1>
         <div className="flex items-center gap-4">
-            <span className="text-xs bg-red-600 px-2 py-0.5 rounded uppercase font-black">Admin Mode</span>
+            
             <button onClick={() => { localStorage.clear(); window.location.href='/'; }} className="bg-gray-600 hover:bg-gray-700 px-4 py-1 rounded text-sm transition">Выйти</button>
         </div>
       </nav>
 
       <div className="max-w-7xl mx-auto py-8 px-4">
         <div className="flex space-x-4 mb-8">
-          <a href="/admin/create-project" className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition">
+          <a href="/admin/create-project" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition">
+            
             + Добавить проект
           </a>
-          <a href="/admin/doctors" className="bg-emerald-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-emerald-700 transition">
+          <a href="/admin/doctors" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="bg-emerald-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-emerald-700 transition">
             👥 Управление врачами
           </a>
         </div>
@@ -126,7 +133,7 @@ export const AdminDashboard: React.FC = () => {
               <tr>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase">Дата</th>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase">Пациент</th>
-                <th className="p-4 font-bold text-gray-600 text-xs uppercase">Назначенный врач</th>
+                <th className="p-4 font-bold text-gray-600 text-xs uppercase">Врач</th>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase text-center">Управление</th>
               </tr>
             </thead>

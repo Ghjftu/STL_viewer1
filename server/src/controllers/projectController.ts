@@ -160,3 +160,61 @@ export const saveProjectScene = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
+
+
+// Добавь этот экспорт в конец projectController.ts
+
+export const saveSketch = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { cameraState, canvasData, svgContent } = req.body;
+
+    // 1. Получаем корневой путь проекта из БД
+    const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+    if (projectRes.rows.length === 0) {
+      return res.status(404).json({ message: "Проект не найден" });
+    }
+    const projectPath = projectRes.rows[0].file_path_root;
+
+    // 2. Убеждаемся, что папка sketches существует
+    const sketchesDir = path.join(projectPath, 'sketches');
+    if (!fs.existsSync(sketchesDir)) {
+      fs.mkdirSync(sketchesDir, { recursive: true });
+    }
+
+    // 3. Формируем уникальные имена файлов
+    const timestamp = Date.now();
+    const jsonFileName = `sketch_${timestamp}.json`;
+    const svgFileName = `sketch_${timestamp}.svg`;
+
+    // 4. Сохраняем файлы на диск (Файловая система)
+    fs.writeFileSync(path.join(sketchesDir, jsonFileName), JSON.stringify({ cameraState, canvasData }, null, 2));
+    if (svgContent) {
+      fs.writeFileSync(path.join(sketchesDir, svgFileName), svgContent);
+    }
+    console.log(`✅ Эскиз сохранен в файлы: ${jsonFileName}, ${svgFileName}`);
+
+    // 5. Записываем эскиз в базу данных
+    const sketchRes = await pool.query(
+      `INSERT INTO sketches (project_id, camera_state, canvas_data) 
+       VALUES ($1, $2, $3) RETURNING id`,
+      [id, JSON.stringify(cameraState), JSON.stringify(canvasData)]
+    );
+    const sketchId = sketchRes.rows[0].id;
+
+    // 6. Формируем "болванку" для ТЗ (согласно п.12 ТЗ)
+    await pool.query(
+      `INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`,
+      [id, sketchId]
+    );
+
+    res.status(200).json({ 
+      message: "Эскиз и ТЗ успешно сохранены", 
+      sketchId 
+    });
+
+  } catch (error: any) {
+    console.error("❌ Ошибка сохранения эскиза:", error);
+    res.status(500).json({ message: "Ошибка сервера при сохранении эскиза" });
+  }
+};

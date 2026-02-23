@@ -7,7 +7,8 @@ import {
   createProject, 
   getProjects, 
   getProjectById, 
-  saveProjectScene 
+  saveProjectScene,
+  saveSketch
 } from '../controllers/projectController';
 import { authenticateToken } from '../middlewares/authMiddleware';
 
@@ -28,6 +29,7 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 // 1. Создание и список — ТОЖЕ закроем, чтобы только админ/врач могли видеть
 router.post('/create', authenticateToken, upload.array('files', 10), createProject);
+router.post('/:id/sketch', authenticateToken, saveSketch);
 router.get('/list', authenticateToken, getProjects);
 
 // 2. Получение проекта по ID (Самый важный для врача)
