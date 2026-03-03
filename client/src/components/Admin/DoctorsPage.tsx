@@ -5,7 +5,7 @@ export const DoctorsPage: React.FC = () => {
   const [form, setForm] = useState({ login: '', password: '', full_name: '' });
 
   const load = () => {
-    fetch('http://localhost:8000/api/doctors')
+    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`)
       .then(res => res.json())
       .then(data => Array.isArray(data) && setDoctors(data));
   };
@@ -14,7 +14,7 @@ export const DoctorsPage: React.FC = () => {
 
   const handleAdd = async () => {
     if (!form.login || !form.password || !form.full_name) return alert("Заполните все поля");
-    const res = await fetch('http://localhost:8000/api/doctors', {
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form)
@@ -29,7 +29,7 @@ export const DoctorsPage: React.FC = () => {
 
   const handleDelete = async (id: number) => {
     if (window.confirm("Удалить врача?")) {
-      await fetch(`http://localhost:8000/api/doctors/${id}`, { method: 'DELETE' });
+      await fetch(`${import.meta.env.VITE_API_URL}/api/doctors/${id}`, { method: 'DELETE' });
       load();
     }
   };

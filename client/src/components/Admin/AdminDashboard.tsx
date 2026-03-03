@@ -36,7 +36,7 @@ export const AdminDashboard: React.FC = () => {
   });
 
   const fetchProjects = () => {
-    fetch('http://localhost:8000/api/projects/list', {
+    fetch(`${import.meta.env.VITE_API_URL}/api/projects/list`, {
       headers: getAuthHeaders() // ДОБАВИЛИ ТОКЕН
     })
       .then(res => {
@@ -50,7 +50,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const fetchDoctors = () => {
-    fetch('http://localhost:8000/api/doctors', {
+    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
       headers: getAuthHeaders() // ДОБАВИЛИ ТОКЕН
     })
       .then(res => res.json())
@@ -61,10 +61,42 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const copyLink = (projectId: string) => {
-    const viewerLink = `${window.location.origin}/viewer/${projectId}`;
-    navigator.clipboard.writeText(viewerLink);
-    alert('Ссылка скопирована!');
-  };
+  const viewerLink = `${window.location.origin}/viewer/${projectId}`;
+
+      // Проверяем, доступно ли современное API и находимся ли мы в защищенном контексте
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(viewerLink)
+          .then(() => alert('Ссылка скопирована!'))
+          .catch(() => alert('Ошибка при копировании'));
+      } else {
+        // Старый добрый способ для HTTP и IP-адресов
+        const textArea = document.createElement("textarea");
+        textArea.value = viewerLink;
+        
+        // Делаем элемент невидимым
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        textArea.style.top = "0";
+        document.body.appendChild(textArea);
+        
+        textArea.focus();
+        textArea.select();
+        
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            alert('Ссылка скопирована!');
+          } else {
+            alert('Не удалось скопировать ссылку');
+          }
+        } catch (err) {
+          alert('Ошибка при копировании');
+        }
+        
+        document.body.removeChild(textArea);
+      }
+    };
+      
 
   const handleUpdateProject = async () => {
     if (!editingProject) return;
@@ -79,7 +111,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       // ВАЖНО: Проверь, чтобы в контроллере был роут на обновление. 
       // Если ты используешь стандартный путь, то обычно это PUT /api/projects/:id
-      const res = await fetch(`http://localhost:8000/api/projects/${editingProject.id}`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/projects/${editingProject.id}`, {
           method: 'PUT',
           headers: getAuthHeaders(), // ДОБАВИЛИ ТОКЕН
           body: JSON.stringify(body)

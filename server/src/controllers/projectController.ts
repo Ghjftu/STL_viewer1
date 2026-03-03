@@ -97,21 +97,25 @@ export const getProjectById = async (req: Request, res: Response) => {
     const storageIndex = project.file_path_root.indexOf('storage/'); // ищем начало папки storage
     const relativePath = storageIndex !== -1 ? project.file_path_root.substring(storageIndex) : '';
 
-    let stlFiles: any[] = [];
-    if (fs.existsSync(stlFolder)) {
-      const files = fs.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
-      stlFiles = files.map((file, index) => ({
-        id: `stl-${index}`,
-        name: file,
-        url: `http://localhost:8000/${relativePath}/stl/${file}`, // Ссылка для скачивания Three.js
-        // Дефолтные настройки для сцены:
-        position: [0, 0, 0],
-        rotation: [0, 0, 0],
-        color: '#cccccc',
-        opacity: 1,
-        visible: true
-      }));
-    }
+    // Получаем протокол (http) и хост (ip:port или домен) прямо из запроса
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+      let stlFiles: any[] = [];
+      if (fs.existsSync(stlFolder)) {
+        const files = fs.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
+        stlFiles = files.map((file, index) => ({
+          id: `stl-${index}`,
+          name: file,
+         
+          url: `${baseUrl}/${relativePath}/stl/${file}`, 
+          // Дефолтные настройки для сцены:
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
+          color: '#cccccc',
+          opacity: 1,
+          visible: true
+        }));
+      }
 
     res.json({ project, stlFiles });
   } catch (error: any) {
@@ -202,7 +206,7 @@ export const saveSketch = async (req: Request, res: Response) => {
     );
     const sketchId = sketchRes.rows[0].id;
 
-    // 6. Формируем "болванку" для ТЗ (согласно п.12 ТЗ)
+    // 6. Формируем "болванку" для ТЗ 
     await pool.query(
       `INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`,
       [id, sketchId]

@@ -11,7 +11,7 @@ export const ProjectForm: React.FC = () => {
   // 1. При загрузке формы тоже нужен токен, чтобы получить список врачей
   useEffect(() => {
     const token = localStorage.getItem('token');
-    fetch('http://localhost:8000/api/doctors', {
+    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -36,7 +36,7 @@ export const ProjectForm: React.FC = () => {
 
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/projects/create', { 
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/projects/create`, { 
         method: 'POST', 
         headers: {
           // ВАЖНО: При отправке FormData заголовок Content-Type ставить НЕЛЬЗЯ, 
