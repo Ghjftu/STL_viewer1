@@ -1,0 +1,60 @@
+{
+  "cameraState": {
+    "position": [
+      0,
+      0,
+      150
+    ],
+    "rotation": [
+      0,
+      0,
+      0,
+      "XYZ"
+    ],
+    "zoom": 2
+  },
+  "canvasData": [
+    {
+      "type": "text",
+      "target": {
+        "x": 755,
+        "y": 555
+      },
+      "labelPos": {
+        "x": 929,
+        "y": 488
+      },
+      "textId": 1,
+      "color": "#ff0000",
+      "fontSize": 16
+    },
+    {
+      "type": "text",
+      "target": {
+        "x": 727,
+        "y": 405
+      },
+      "labelPos": {
+        "x": 559,
+        "y": 287
+      },
+      "textId": 2,
+      "color": "#ff0000",
+      "fontSize": 16
+    },
+    {
+      "type": "text",
+      "target": {
+        "x": 766,
+        "y": 370
+      },
+      "labelPos": {
+        "x": 972,
+        "y": 296
+      },
+      "textId": 3,
+      "color": "#ff0000",
+      "fontSize": 16
+    }
+  ]
+}

@@ -17,7 +17,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
 
     try {
-      const response = await fetch('http://localhost:8000/api/auth/login', {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ login, password }),
@@ -26,29 +26,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       const data = await response.json();
 
       if (response.ok) {
-        // 1. Сохраняем данные авторизации
         localStorage.setItem('token', data.token);
-        localStorage.setItem('role', data.role); // Обязательно сохраняем роль!
+        localStorage.setItem('role', data.role);
         
-        // 2. Уведомляем приложение
         onLoginSuccess(data.role);
 
-        // 3. Редирект в зависимости от роли
-        const returnUrl = localStorage.getItem('returnUrl');
+        // ПРОВЕРЯЕМ: если мы пришли со ссылки врача
+        const savedUrl = window.location.pathname !== '/' ? window.location.pathname : null;
+        const returnUrl = savedUrl || localStorage.getItem('returnUrl');
         
-        if (returnUrl) {
-            // Если была сохранена ссылка (например, /viewer/123), идем туда и чистим память
+        if (returnUrl && returnUrl.includes('/viewer/')) {
             localStorage.removeItem('returnUrl');
             window.location.href = returnUrl;
         } else {
-            // Иначе стандартное распределение
-            if (data.role === 'admin') {
-              window.location.href = '/admin';
-            } else {
-              window.location.href = '/doctor-dashboard'; 
-            }
+            window.location.href = data.role === 'admin' ? '/admin' : '/doctor-dashboard';
         }
-      } else {
+      }
+      else {
         setError(data.message || 'Ошибка входа');
       }
     } catch (err) {
@@ -62,7 +56,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-900">
       <form onSubmit={handleSubmit} className="bg-white p-8 rounded-lg shadow-xl w-96">
-        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">STL Viewer Pro</h2>
+        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">STL Viewer</h2>
         {error && <p className="text-red-500 mb-4 text-sm bg-red-50 p-2 rounded">{error}</p>}
         <div className="mb-4">
           <label className="block text-gray-700 text-sm font-bold mb-2">Логин</label>

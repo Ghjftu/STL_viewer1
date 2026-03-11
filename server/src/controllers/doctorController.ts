@@ -5,7 +5,10 @@ import bcrypt from 'bcrypt';
 export const getDoctors = async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
-      "SELECT id, login, full_name FROM users WHERE role = 'doctor' ORDER BY full_name ASC"
+      `SELECT id, login, full_name, country, city, clinic, department 
+       FROM users 
+       WHERE role = 'doctor' 
+       ORDER BY full_name ASC`
     );
     res.json(result.rows);
   } catch (error) {
@@ -15,20 +18,19 @@ export const getDoctors = async (req: Request, res: Response) => {
 
 export const addDoctor = async (req: Request, res: Response) => {
   try {
-    const { login, password, full_name } = req.body;
+    const { login, password, full_name, country, city, clinic, department } = req.body;
 
     if (!login || !password || !full_name) {
-      return res.status(400).json({ message: "Все поля обязательны" });
+      return res.status(400).json({ message: "Логин, пароль и ФИО обязательны" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Используем ПРАВИЛЬНОЕ имя колонки: password_hash
+
     const result = await pool.query(
-      `INSERT INTO users (login, password_hash, role, full_name) 
-       VALUES ($1, $2, 'doctor', $3) 
-       RETURNING id, login, full_name`,
-      [login, hashedPassword, full_name]
+      `INSERT INTO users (login, password_hash, role, full_name, country, city, clinic, department) 
+       VALUES ($1, $2, 'doctor', $3, $4, $5, $6, $7) 
+       RETURNING id, login, full_name, country, city, clinic, department`,
+      [login, hashedPassword, full_name, country, city, clinic, department]
     );
 
     console.log("✅ Врач добавлен:", result.rows[0]);

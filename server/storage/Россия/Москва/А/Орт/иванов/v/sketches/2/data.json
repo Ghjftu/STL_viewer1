@@ -1,0 +1,39 @@
+{
+  "cameraState": {
+    "position": [
+      0,
+      0,
+      150
+    ],
+    "rotation": [
+      0,
+      0,
+      0,
+      "XYZ"
+    ],
+    "zoom": 18.392963378763557,
+    "viewportWidth": 1512,
+    "viewportHeight": 786
+  },
+  "canvasData": [
+    {
+      "type": "circle",
+      "points": [
+        {
+          "x": 748,
+          "y": 491
+        },
+        {
+          "x": 809,
+          "y": 412
+        },
+        {
+          "x": 636,
+          "y": 302
+        }
+      ],
+      "value": 12
+    }
+  ],
+  "textNotes": []
+}

@@ -1,34 +1,32 @@
 import fs from 'fs';
 import path from 'path';
 import pool from '../config/db';
+import bcrypt from 'bcrypt';
 
-const initDb = async () => {
+export const initDb = async () => {
   try {
-    // Читаем файл init.sql
-    const sqlPath = path.join(__dirname, '../../init.sql');
+    const sqlPath = path.join(process.cwd(), 'init.sql'); // Исправленный путь для Docker
     const sql = fs.readFileSync(sqlPath, 'utf8');
 
     console.log('⏳ Initializing database...');
-    
-    // Выполняем SQL запрос
     await pool.query(sql);
     
-    console.log('✅ Database tables created successfully!');
-    
-    // (Опционально) Создадим тестового админа, если его нет
-    // Пароль пока храним открытым текстом для теста, позже добавим хеширование
+    const hashedPassword = await bcrypt.hash('admin123', 10);
+
+    // ВНИМАНИЕ: Здесь теперь DO UPDATE, чтобы затереть старый текст хешем
     await pool.query(`
       INSERT INTO users (login, password_hash, role, full_name)
-      VALUES ('admin', 'admin123', 'admin', 'System Administrator')
-      ON CONFLICT (login) DO NOTHING;
-    `);
-    console.log('👤 Admin user ensured (login: admin, pass: admin123)');
+      VALUES ('admin', $1, 'admin', 'System Administrator')
+      ON CONFLICT (login) 
+      DO UPDATE SET password_hash = EXCLUDED.password_hash;
+    `, [hashedPassword]);
 
+    console.log('✅ Database initialized. Admin updated with hash.');
   } catch (err) {
-    console.error('❌ Error initializing database:', err);
-  } finally {
-    await pool.end();
+    console.error('❌ Init DB Error:', err);
   }
 };
 
-initDb();
+if (require.main === module) {
+  initDb();
+}

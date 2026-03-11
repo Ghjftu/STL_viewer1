@@ -6,6 +6,7 @@ import { DoctorsPage } from './components/Admin/DoctorsPage';
 import { DoctorDashboard } from './components/Doctor/DoctorDashboard.tsx';
 import { Viewer3D } from './components/Viewer/Viewer3D';
 
+
 export default function App() {
   // Функция теперь используется для определения начального пути
   const getRedirectPath = () => {
@@ -47,7 +48,20 @@ export default function App() {
         <Route path="/doctor-dashboard" element={<DoctorDashboard />} />
         
         {/* Просмотрщик 3D */}
-        <Route path="/viewer/:id" element={<Viewer3D />} />
+        <Route 
+          path="/viewer/:id" 
+          element={
+            localStorage.getItem('token') ? (
+              <Viewer3D />
+            ) : (
+              // Если токена нет, сохраняем ссылку и отправляем на логин
+              (() => {
+                localStorage.setItem('returnUrl', window.location.pathname);
+                return <Navigate to="/" replace />;
+              })()
+            )
+          } 
+        />
 
         {/* 404 - Страница не найдена */}
         <Route path="*" element={<div className="p-10 text-black">404 - Страница не найдена</div>} />

@@ -1,14 +1,18 @@
 import { Router, Response } from 'express';
-import { AuthRequest } from '../middlewares/authMiddleware'; // Импортируем тип
+import { AuthRequest } from '../middlewares/authMiddleware'; 
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { getProjectSketches, getSketchSvg } from '../controllers/projectController';
 import { 
   createProject, 
   getProjects, 
   getProjectById, 
   saveProjectScene,
-  saveSketch
+  saveSketch,
+  // --- ДОБАВЛЯЕМ ИМПОРТ НОВЫХ ФУНКЦИЙ ---
+  updateProject, 
+  deleteFile      
 } from '../controllers/projectController';
 import { authenticateToken } from '../middlewares/authMiddleware';
 
@@ -27,18 +31,30 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 // --- МАРШРУТЫ ---
 
-// 1. Создание и список — ТОЖЕ закроем, чтобы только админ/врач могли видеть
 router.post('/create', authenticateToken, upload.array('files', 10), createProject);
 router.post('/:id/sketch', authenticateToken, saveSketch);
 router.get('/list', authenticateToken, getProjects);
 
-// 2. Получение проекта по ID (Самый важный для врача)
+// 1. ПОЛУЧЕНИЕ ПРОЕКТА
 router.get('/:id', authenticateToken, (req: AuthRequest, res: Response) => {
-  console.log(`🔐 [AUTH OK] Юзер ${req.user?.userId} запрашивает проект ${req.params.id}`);
   getProjectById(req, res);
 });
 
-// 3. Сохранение сцены
+// GET /api/projects/:id/sketches
+router.get('/:id/sketches', getProjectSketches);
+// GET /api/projects/:id/sketches/:folder/svg
+router.get('/:id/sketches/:folder/svg', getSketchSvg);
+
+// 2. ОБНОВЛЕНИЕ ПРОЕКТА (Текстовые данные + Новые файлы)
+// Добавляем upload.array('files'), чтобы multer распарсил новые STL
+router.put('/:id', authenticateToken, upload.array('files', 10), updateProject);
+
+// 3. УДАЛЕНИЕ КОНКРЕТНОГО ФАЙЛА ИЗ ПРОЕКТА
+router.post('/:id/delete-file', authenticateToken, deleteFile);
+
+// 4. СОХРАНЕНИЕ СОСТОЯНИЯ СЦЕНЫ
 router.put('/:id/scene', authenticateToken, saveProjectScene);
+
+
 
 export default router;

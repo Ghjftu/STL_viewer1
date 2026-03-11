@@ -1,0 +1,58 @@
+{
+  "cameraState": {
+    "position": [
+      0,
+      0,
+      150
+    ],
+    "rotation": [
+      0,
+      0,
+      0,
+      "XYZ"
+    ],
+    "zoom": 16.095406402718805,
+    "viewportWidth": 1512,
+    "viewportHeight": 786
+  },
+  "canvasData": [
+    {
+      "type": "circle",
+      "points": [
+        {
+          "x": 658,
+          "y": 473
+        },
+        {
+          "x": 624,
+          "y": 339
+        },
+        {
+          "x": 725,
+          "y": 299
+        }
+      ],
+      "value": 11.7
+    },
+    {
+      "type": "text",
+      "target": {
+        "x": 823,
+        "y": 343
+      },
+      "labelPos": {
+        "x": 1020,
+        "y": 181
+      },
+      "textId": 1,
+      "color": "#ff0000",
+      "fontSize": 16
+    }
+  ],
+  "textNotes": [
+    {
+      "id": 1,
+      "text": "import React, { useEffect, useState, useRef } from 'react';\nimport { Canvas, useThree, useLoader } from '@react-three/fiber';\nimport { OrthographicCamera } from '@react-three/drei';\nimport * as THREE from 'three';\nimport { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';\n\n// --- КОМПОНЕНТ ДЛЯ ЗАГРУЗКИ И ОТРИСОВКИ STL-МОДЕЛИ ---\nconst STLMesh: React.FC<{ model: any }> = ({ model }) => {\n  const geometry = useLoader(STLLoader, model.url);\n  const geometries = Array.isArray(geometry) ? geometry : [geometry];\n\n  const rot = model.rotation || [0, 0, 0];\n  const rotationInRadians: [number, number, number] = [\n    THREE.MathUtils.degToRad(rot[0]),\n    THREE.MathUtils.degToRad(rot[1]),\n    THREE.MathUtils.degToRad(rot[2]),\n  ];\n\n  return (\n    <group position={model.position} rotation={rotationInRadians} visible={model.visible}>\n      {geometries.map((geom, idx) => (\n        <mesh key={idx} geometry={geom}>\n          <meshStandardMaterial\n            color={model.color}\n            transparent={model.opacity < 1}\n            opacity={model.opacity}\n            side={THREE.DoubleSide}\n          />\n        </mesh>\n      ))}\n    </group>\n  );\n};\n\n// --- ФИКСИРОВАННАЯ КАМЕРА ---\nconst FixedCamera: React.FC<{ cameraState: any }> = ({ cameraState }) => {\n  const { camera } = useThree();\n  useEffect(() => {\n    if (!cameraState) return;\n    if (camera instanceof THREE.OrthographicCamera) {\n      if (cameraState.position && Array.isArray(cameraState.position)) {\n        camera.position.set(cameraState.position[0], cameraState.position[1], cameraState.position[2]);\n      }\n      if (cameraState.rotation && Array.isArray(cameraState.rotation)) {\n        camera.rotation.set(cameraState.rotation[0], cameraState.rotation[1], cameraState.rotation[2]);\n      }\n      if (cameraState.zoom) camera.zoom = cameraState.zoom;\n      camera.updateProjectionMatrix();\n    }\n  }, [cameraState, camera]);\n  return null;\n};\n\nexport const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => {\n  const [project, setProject] = useState<any>(null);\n  const [stlModels, setStlModels] = useState<any[]>([]);\n  const [sketches, setSketches] = useState<any[]>([]);\n  const [currentSketchIndex, setCurrentSketchIndex] = useState(0);\n  const [svgContent, setSvgContent] = useState<string | null>(null);\n  const [loading, setLoading] = useState(true);\n  \n  // Реф для измерения размеров окна инженера (на случай старых эскизов)\n  const containerRef = useRef<HTMLDivElement>(null);\n\n  useEffect(() => {\n    const token = localStorage.getItem('token');\n    if (!token) return;\n\n    Promise.all([\n      fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}`, {\n        headers: { Authorization: `Bearer ${token}` }\n      }).then(res => res.json()),\n      fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketches`, {\n        headers: { Authorization: `Bearer ${token}` }\n      }).then(res => res.json())\n    ])\n      .then(([projectData, sketchesData]) => {\n        setProject(projectData.project);\n        setStlModels(projectData.stlFiles || []);\n        setSketches(sketchesData);\n        if (sketchesData.length > 0) {\n          loadSketchSvg(sketchesData[0].folderNumber);\n        }\n      })\n      .catch(console.error)\n      .finally(() => setLoading(false));\n  }, [projectId]);\n\n  const loadSketchSvg = (folderNumber: number) => {\n    const token = localStorage.getItem('token');\n    fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketches/${folderNumber}/svg`, {\n      headers: { Authorization: `Bearer ${token}` }\n    })\n      .then(res => res.text())\n      .then((svg) => {\n        try {\n          // Безопасный парсинг SVG вместо регулярных выражений\n          const parser = new DOMParser();\n          const doc = parser.parseFromString(svg, \"image/svg+xml\");\n          const svgElement = doc.documentElement;\n          \n          if (svgElement.tagName.toLowerCase() === 'svg') {\n            // Удаляем классы Tailwind, которые могут ломать размеры\n            svgElement.removeAttribute('class');\n            svgElement.removeAttribute('width');\n            svgElement.removeAttribute('height');\n            // Заставляем SVG растянуться точно по нашему контейнеру-якорю\n            svgElement.setAttribute('style', 'width: 100%; height: 100%; display: block; overflow: visible;');\n            setSvgContent(svgElement.outerHTML);\n          } else {\n            setSvgContent(svg); // Фолбэк\n          }\n        } catch (e) {\n          console.error(\"Ошибка парсинга SVG:\", e);\n          setSvgContent(svg);\n        }\n      })\n      .catch(console.error);\n  };\n\n  const handleSketchChange = (index: number) => {\n    setCurrentSketchIndex(index);\n    const sketch = sketches[index];\n    if (sketch) {\n      loadSketchSvg(sketch.folderNumber);\n    }\n  };\n\n  if (loading) return <div className=\"h-screen bg-gray-900 text-white flex items-center justify-center\">Загрузка эскизов...</div>;\n  if (!project || sketches.length === 0) return <div className=\"h-screen bg-gray-900 text-red-500 flex items-center justify-center\">Нет сохранённых эскизов</div>;\n\n  const currentSketch = sketches[currentSketchIndex];\n  const textNotes = currentSketch.textNotes || [];\n\n  // Достаем якорь. Если это старый скетч без якоря, используем текущие размеры экрана.\n  const anchorWidth = currentSketch.cameraState?.viewportWidth || containerRef.current?.clientWidth || 800;\n  const anchorHeight = currentSketch.cameraState?.viewportHeight || containerRef.current?.clientHeight || 600;\n\n  return (\n    <div className=\"flex h-screen bg-gray-900 text-white overflow-hidden\">\n\n      {/* Левая панель */}\n      <div className=\"w-80 bg-gray-800 border-r border-gray-700 p-4 overflow-y-auto flex flex-col z-20 shrink-0\">\n        <h2 className=\"text-xl font-bold mb-4\">Эскизы проекта</h2>\n        <div className=\"space-y-2 mb-6\">\n          {sketches.map((sketch, idx) => (\n            <button\n              key={sketch.id}\n              onClick={() => handleSketchChange(idx)}\n              className={`w-full text-left p-3 rounded-lg transition ${\n                idx === currentSketchIndex\n                  ? 'bg-blue-600 text-white'\n                  : 'bg-gray-700 hover:bg-gray-600'\n              }`}\n            >\n              <div className=\"font-bold\">Эскиз #{sketch.folderNumber}</div>\n              <div className=\"text-xs opacity-75\">{new Date(sketch.createdAt).toLocaleString()}</div>\n            </button>\n          ))}\n        </div>\n      </div>\n\n      {/* Основная область: Canvas + ВЕРНОЕ НАЛОЖЕНИЕ SVG */}\n      <div ref={containerRef} className=\"flex-1 relative overflow-hidden bg-white\">\n        <Canvas\n          className=\"w-full h-full absolute inset-0\"\n          gl={{ antialias: true, alpha: false }}\n          onCreated={({ gl }) => gl.setClearColor('#ffffff')}\n        >\n          <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />\n          <FixedCamera cameraState={currentSketch.cameraState} />\n          <ambientLight intensity={0.6} />\n          <directionalLight position={[50, 50, 50]} intensity={1.5} />\n          <directionalLight position={[-50, -50, -50]} intensity={0.5} />\n          {stlModels.map(model => (\n            <STLMesh key={model.id} model={model} />\n          ))}\n        </Canvas>\n\n        {/* Якорь для SVG */}\n        {svgContent && (\n          <div className=\"absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible\">\n            <div \n              style={{ \n                width: anchorWidth, \n                height: anchorHeight, \n                position: 'relative',\n                flexShrink: 0 // Запрещаем браузеру сжимать рисунок\n              }}\n              dangerouslySetInnerHTML={{ __html: svgContent }}\n            />\n          </div>\n        )}\n      </div>\n\n      {/* Правая панель */}\n      <div className=\"w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto flex flex-col z-20 shrink-0\">\n        <h2 className=\"text-xl font-bold mb-4\">Комментарии врача</h2>\n        {textNotes.length > 0 ? (\n          <div className=\"space-y-3\">\n            {textNotes.map((note: any) => (\n              <div key={note.id} className=\"bg-gray-700 p-3 rounded-lg text-sm border-l-4 border-blue-500\">\n                <span className=\"text-blue-400 font-mono text-xs block mb-1\">Заметка #{note.id}</span>\n                <span className=\"text-gray-100 leading-relaxed\">{note.text}</span>\n              </div>\n            ))}\n          </div>\n        ) : (\n          <div className=\"text-gray-400 text-sm text-center mt-4\">\n            Нет комментариев для этого эскиза\n          </div>\n        )}\n      </div>\n\n    </div>\n  );\n};"
+    }
+  ]
+}

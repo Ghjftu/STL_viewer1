@@ -8,6 +8,10 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'doctor')),
     full_name TEXT NOT NULL,
+    country TEXT,
+    city TEXT,
+    clinic TEXT,
+    department TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -50,7 +54,10 @@ CREATE TABLE IF NOT EXISTS sketches (
     project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
     camera_state JSONB NOT NULL,
     canvas_data JSONB NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    text_notes JSONB DEFAULT '[]',      -- Массив текстовых заметок
+    folder_number INTEGER,               -- Номер папки для привязки к файловой структуре
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(project_id, folder_number)    -- Гарантирует уникальность папок в рамках проекта
 );
 
 -- 6. Техническое задание (Финальный документ)

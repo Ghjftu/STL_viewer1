@@ -20,7 +20,7 @@ export const DoctorDashboard: React.FC = () => {
 
     // 2. Загружаем проекты только для этого врача
     // Передаем параметры в URL для фильтрации на бэкенде
-    fetch(`http://localhost:8000/api/projects/list?userId=${userId}&role=${role}`)
+    fetch(`${import.meta.env.VITE_API_URL}/api/projects/list?userId=${userId}&role=${role}`)
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
