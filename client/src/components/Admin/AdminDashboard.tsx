@@ -39,7 +39,7 @@ export const AdminDashboard: React.FC = () => {
   });
 
   const fetchProjects = () => {
-    fetch(`${import.meta.env.VITE_API_URL}/api/projects/list`, {
+    fetch(`${import.meta.env.VITE_API_URL}/projects/list`, {
       headers: getAuthHeaders(),
     })
       .then((res) => {
@@ -53,7 +53,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const fetchDoctors = () => {
-    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
+    fetch(`${import.meta.env.VITE_API_URL}/doctors`, {
       headers: getAuthHeaders(),
     })
       .then((res) => res.json())
@@ -65,7 +65,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Fetch detailed project info including STL files
   const fetchProjectDetails = (id: string) => {
-    fetch(`${import.meta.env.VITE_API_URL}/api/projects/${id}`, {
+    fetch(`${import.meta.env.VITE_API_URL}/projects/${id}`, {
       headers: getAuthHeaders(),
     })
       .then((res) => res.json())
@@ -114,7 +114,7 @@ export const AdminDashboard: React.FC = () => {
 
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/projects/${editingProject.id}/delete-file`,
+        `${import.meta.env.VITE_API_URL}/projects/${editingProject.id}/delete-file`,
         {
           method: 'POST',
           headers: getAuthHeaders(),
@@ -149,7 +149,7 @@ export const AdminDashboard: React.FC = () => {
 
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/projects/${editingProject.id}`,
+        `${import.meta.env.VITE_API_URL}/projects/${editingProject.id}`,
         {
           method: 'PUT',
           headers: {

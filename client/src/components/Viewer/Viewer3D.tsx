@@ -406,7 +406,7 @@ const Viewer3DScene: React.FC<{
       const token = localStorage.getItem('token');
       if (!token) return;
 
-      void fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/scene`, {
+      void fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/scene`, {
         method: 'POST',
         keepalive,
         headers: {
@@ -581,7 +581,7 @@ const Viewer3DScene: React.FC<{
       return;
     }
 
-    fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}`, {
+    fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
@@ -814,7 +814,7 @@ const Viewer3DScene: React.FC<{
 
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketch`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketch`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

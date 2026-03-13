@@ -16,7 +16,7 @@ export const ProjectForm: React.FC = () => {
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
+    fetch(`${import.meta.env.VITE_API_URL}/doctors`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => {
@@ -97,7 +97,7 @@ export const ProjectForm: React.FC = () => {
     const token = localStorage.getItem('token');
     setLoading(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/api/projects/create`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/projects/create`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: data

@@ -66,10 +66,10 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     if (!token) return;
 
     Promise.all([
-      fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}`, {
+      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(res => res.json()),
-      fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketches`, {
+      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(res => res.json())
     ])
@@ -87,7 +87,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   const loadSketchSvg = (folderNumber: number) => {
     const token = localStorage.getItem('token');
-    fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketches/${folderNumber}/svg`, {
+    fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches/${folderNumber}/svg`, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(res => res.text())
@@ -126,7 +126,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   const downloadSvg = async (folderNumber: number) => {
     const token = localStorage.getItem('token');
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/projects/${projectId}/sketches/${folderNumber}/svg`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches/${folderNumber}/svg`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const svgText = await response.text();

@@ -13,7 +13,7 @@ export const DoctorsPage: React.FC = () => {
   });
 
   const load = () => {
-    fetch(`${import.meta.env.VITE_API_URL}/api/doctors`)
+    fetch(`${import.meta.env.VITE_API_URL}/doctors`)
       .then(res => res.json())
       .then(data => Array.isArray(data) && setDoctors(data));
   };
@@ -24,7 +24,7 @@ export const DoctorsPage: React.FC = () => {
     if (!form.login || !form.password || !form.full_name) {
       return alert("Заполните логин, пароль и ФИО");
     }
-    const res = await fetch(`${import.meta.env.VITE_API_URL}/api/doctors`, {
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/doctors`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form)
@@ -47,7 +47,7 @@ export const DoctorsPage: React.FC = () => {
 
   const handleDelete = async (id: number) => {
     if (window.confirm("Удалить врача?")) {
-      await fetch(`${import.meta.env.VITE_API_URL}/api/doctors/${id}`, { method: 'DELETE' });
+      await fetch(`${import.meta.env.VITE_API_URL}/doctors/${id}`, { method: 'DELETE' });
       load();
     }
   };
