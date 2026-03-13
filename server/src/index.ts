@@ -12,19 +12,21 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8000;
 
+// 1. Настройки безопасности и парсинга
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// 2. Раздача папки с 3D-моделями (это оставляем, это нужно!)
 app.use('/storage', express.static(path.join(__dirname, '../storage')));
+
+// 3. API Маршруты
 app.use('/api/auth', authRoutes);
 app.use('/api/doctors', doctorRoutes);
 app.use('/api/projects', projectRoutes);
 
-const clientDistPath = path.join(__dirname, '../../client');
-app.use(express.static(clientDistPath));
-
-app.get(/(.*)/, (req, res) => {
-  res.sendFile(path.join(clientDistPath, 'index.html'));
+// Если запрос пришел на /api/..., но маршрут не найден — возвращаем нормальную JSON ошибку
+app.use('/api/*', (req, res) => {
+  res.status(404).json({ message: "API route not found" });
 });
 
 app.listen(PORT, async () => {
