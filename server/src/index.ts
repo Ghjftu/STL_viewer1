@@ -24,8 +24,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/doctors', doctorRoutes);
 app.use('/api/projects', projectRoutes);
 
-// Если запрос пришел на /api/..., но маршрут не найден — возвращаем нормальную JSON ошибку
-app.use('/api/*', (req, res) => {
+// Если запрос пришел на /api/..., но маршрут не найден
+app.use('/api', (req, res) => {
   res.status(404).json({ message: "API route not found" });
 });
 

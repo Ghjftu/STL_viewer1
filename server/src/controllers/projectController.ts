@@ -145,28 +145,30 @@ export const getProjectById = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Проект не найден" });
     }
 
-    const project = result.rows[0];
-    const stlFolder = path.join(project.file_path_root, 'stl');
-    
-    const storageIndex = project.file_path_root.indexOf('storage/'); 
-    const relativePath = storageIndex !== -1 ? project.file_path_root.substring(storageIndex) : '';
+    // server/src/controllers/projectController.ts
 
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+const project = result.rows[0];
+const stlFolder = path.join(project.file_path_root, 'stl');
 
-    let stlFiles: any[] = [];
-    if (fs.existsSync(stlFolder)) {
-      const files = fs.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
-      stlFiles = files.map((file, index) => ({
-        id: `stl-${index}`,
-        name: file,
-        url: `${baseUrl}/${relativePath}/stl/${file}`, 
-        position: [0, 0, 0],
-        rotation: [0, 0, 0],
-        color: '#cccccc',
-        opacity: 1,
-        visible: true
-      }));
-    }
+// Находим, где начинается /storage/ в полном пути
+const storageIndex = project.file_path_root.indexOf('storage/'); 
+const relativePath = storageIndex !== -1 ? project.file_path_root.substring(storageIndex) : '';
+
+let stlFiles: any[] = [];
+if (fs.existsSync(stlFolder)) {
+  const files = fs.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
+  stlFiles = files.map((file, index) => ({
+    id: `stl-${index}`,
+    name: file,
+    // УБИРАЕМ baseUrl. Путь должен начинаться со слеша /
+    url: `/${relativePath}/stl/${file}`, 
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+    color: '#cccccc',
+    opacity: 1,
+    visible: true
+  }));
+}
 
     res.json({ project, stlFiles });
   } catch (error: any) {
