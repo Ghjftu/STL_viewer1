@@ -1,29 +1,31 @@
-// server/src/middlewares/authMiddleware.ts
-import { Request, Response, NextFunction } from 'express';
+import { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-
-export interface AuthRequest extends Request {
-  user?: {
-    userId: string;
-    role: string;
-  };
-}
 
 export const authenticateToken = (req: any, res: Response, next: NextFunction) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
-  if (!token) {
-    console.log("❌ [AUTH] Токен отсутствует в запросе к:", req.originalUrl);
-    return res.status(401).json({ error: 'Access Denied' }); 
+  if (!token) return res.status(401).json({ error: 'Access Denied' });
+
+  console.log(`DEBUG AUTH: Использую секрет (первые 3 символа): ${process.env.JWT_SECRET?.substring(0,3)}...`);
+  // Используем только переменную окружения
+  const secret = process.env.JWT_SECRET;
+  
+  if (!secret) {
+    console.error("JWT_SECRET IS MISSING IN ENV");
+    return res.status(500).json({ error: "Server configuration error" });
   }
 
   try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me_in_prod');
+    const verified = jwt.verify(token, secret);
     req.user = verified;
     next();
   } catch (err) {
-    console.log("❌ [AUTH] Токен невалиден");
+    if (err instanceof Error) {
+      console.log("❌ [AUTH] Ошибка валидации:", err.message);
+    } else {
+      console.log("❌ [AUTH] Ошибка валидации:", err);
+    }
     res.status(403).json({ error: 'Invalid Token' });
   }
 };

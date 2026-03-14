@@ -1,13 +1,13 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+//import dotenv from 'dotenv';
 import path from 'path';
 import authRoutes from './routes/authRoutes';
 import projectRoutes from './routes/projectRoutes';
 import doctorRoutes from './routes/doctorRoutes';
 import { initDb } from './scripts/init-db';
 
-dotenv.config();
+//dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8000;

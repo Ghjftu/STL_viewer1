@@ -12,13 +12,32 @@ export const AdminDashboard: React.FC = () => {
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Функция для обработки неавторизованных запросов (401/403)
+  const handleUnauthorized = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('role');
+    alert('Сессия истекла. Пожалуйста, войдите снова.');
+    window.location.href = '/login';
+  };
+
+  // Получение заголовков авторизации
+  const getAuthHeaders = (contentType = true) => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${localStorage.getItem('token')}`,
+    };
+    if (contentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+    return headers;
+  };
+
   useEffect(() => {
     const role = localStorage.getItem('role');
     const token = localStorage.getItem('token');
 
     if (!token || role !== 'admin') {
       alert('Доступ запрещен!');
-      window.location.href = '/';
+      window.location.href = '/login';
       return;
     }
     setIsAuthorized(true);
@@ -33,17 +52,15 @@ export const AdminDashboard: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', handleFocus);
   }, []);
 
-  const getAuthHeaders = () => ({
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-    'Content-Type': 'application/json',
-  });
-
   const fetchProjects = () => {
     fetch(`${import.meta.env.VITE_API_URL}/projects/list`, {
       headers: getAuthHeaders(),
     })
       .then((res) => {
-        if (res.status === 401) window.location.href = '/';
+        if (res.status === 401 || res.status === 403) {
+          handleUnauthorized();
+          return;
+        }
         return res.json();
       })
       .then((data) => {
@@ -56,7 +73,13 @@ export const AdminDashboard: React.FC = () => {
     fetch(`${import.meta.env.VITE_API_URL}/doctors`, {
       headers: getAuthHeaders(),
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          handleUnauthorized();
+          return;
+        }
+        return res.json();
+      })
       .then((data) => {
         if (Array.isArray(data)) setDoctors(data);
       })
@@ -68,7 +91,13 @@ export const AdminDashboard: React.FC = () => {
     fetch(`${import.meta.env.VITE_API_URL}/projects/${id}`, {
       headers: getAuthHeaders(),
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          handleUnauthorized();
+          return;
+        }
+        return res.json();
+      })
       .then((data) => {
         if (data.stlFiles) setExistingFiles(data.stlFiles);
       })
@@ -121,6 +150,12 @@ export const AdminDashboard: React.FC = () => {
           body: JSON.stringify({ fileName }),
         }
       );
+
+      if (res.status === 401 || res.status === 403) {
+        handleUnauthorized();
+        return;
+      }
+
       if (res.ok) {
         setExistingFiles((prev) => prev.filter((f) => f.name !== fileName));
       } else {
@@ -160,6 +195,11 @@ export const AdminDashboard: React.FC = () => {
         }
       );
 
+      if (res.status === 401 || res.status === 403) {
+        handleUnauthorized();
+        return;
+      }
+
       if (res.ok) {
         setEditModalOpen(false);
         setNewFiles(null);
@@ -187,7 +227,7 @@ export const AdminDashboard: React.FC = () => {
           <button
             onClick={() => {
               localStorage.clear();
-              window.location.href = '/';
+              window.location.href = '/login';
             }}
             className="bg-gray-600 hover:bg-gray-700 px-4 py-1 rounded text-sm transition"
           >

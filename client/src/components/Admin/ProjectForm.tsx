@@ -87,6 +87,14 @@ export const ProjectForm: React.FC = () => {
   const handleCreate = async () => {
     if (!selectedFiles || !formData.doctor_id) return alert("Выберите файлы и врача");
 
+    const token = localStorage.getItem('token');
+    // Шаг 1: Проверка наличия токена
+    if (!token || token === 'null') {
+      alert('Сессия не найдена. Пожалуйста, войдите в систему.');
+      window.location.href = '/login'; // замени на свой путь до страницы авторизации
+      return;
+    }
+
     const data = new FormData();
     Object.entries(formData).forEach(([key, value]) => data.append(key, value));
 
@@ -94,7 +102,6 @@ export const ProjectForm: React.FC = () => {
     const filesToSend = getTransliteratedFiles(selectedFiles);
     filesToSend.forEach(file => data.append('files', file));
 
-    const token = localStorage.getItem('token');
     setLoading(true);
     try {
       const res = await fetch(`${import.meta.env.VITE_API_URL}/projects/create`, {
@@ -110,6 +117,12 @@ export const ProjectForm: React.FC = () => {
         } else {
           window.location.href = '/admin';
         }
+      } 
+      // Шаг 2: Обработка 401 и 403 ошибок
+      else if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem('token');
+        alert("Сессия истекла или недействительна. Перенаправление на логин...");
+        window.location.href = '/login'; 
       } else {
         const errData = await res.json();
         alert(`Ошибка сервера: ${errData.error || errData.message || 'Неизвестная ошибка'}`);

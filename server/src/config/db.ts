@@ -1,14 +1,13 @@
 import { Pool } from 'pg';
-import dotenv from 'dotenv';
 
-dotenv.config();
+console.log("DEBUG: DB_HOST is", process.env.DB_HOST); // Добавь это, чтобы увидеть в логах, что реально приходит
 
 const pool = new Pool({
-  user: process.env.DB_USER || 'admin',
-  password: process.env.DB_PASSWORD || 'rootpassword',
-  host: process.env.DB_HOST || 'db', // 'db' как запасной вариант для Docker
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  host: process.env.DB_HOST || 'stl_postgres', // Явно пропиши имя контейнера
   port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'stl_viewer_db',
+  database: process.env.DB_NAME,
 });
 
 // Обработчик событий подключения
