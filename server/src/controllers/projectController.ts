@@ -34,15 +34,18 @@ export const getProjects = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// 2. СОЗДАНИЕ ПРОЕКТА (УНИКАЛЬНЫЙ ПУТЬ НА ОСНОВЕ ID)
+import { v4 as uuidv4 } from 'uuid'; // Импортируй в начале файла
+
 export const createProject = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Не авторизован" });
     
     const { country, city, clinic, department, doctor_name, patient_name } = req.body;
     const files = req.files as Express.Multer.File[];
-    
     const doctor_id = req.user.userId;
+
+    // 1. Генерируем ID заранее
+    const projectId = uuidv4(); 
 
     const sCountry = country || 'Unknown_Country';
     const sCity = city || 'Unknown_City';
@@ -51,44 +54,26 @@ export const createProject = async (req: AuthRequest, res: Response) => {
     const sDocName = doctor_name || 'Unknown_Doctor';
     const sPatient = patient_name || 'Unknown_Patient';
 
-    // 1. Вставляем запись без пути (пока неизвестен ID)
-    const insertResult = await pool.query(
-      `INSERT INTO projects (doctor_id, patient_name, doctor_display_name) 
-       VALUES ($1, $2, $3) RETURNING id`,
-      [doctor_id, sPatient, sDocName]
-    );
-    const projectId = insertResult.rows[0].id;
-
-    // 2. Формируем уникальное имя папки на основе ID проекта
+    // 2. Сразу формируем уникальный путь
     const uniqueProjectFolder = `project_${projectId}`;
+    const projectPath = createProjectPath(sCountry, sCity, sClinic, sDept, sDocName, uniqueProjectFolder);
 
-    // 3. Строим полный путь к проекту, используя уникальную папку вместо имени пациента
-    const projectPath = createProjectPath(
-      sCountry,
-      sCity,
-      sClinic,
-      sDept,
-      sDocName,
-      uniqueProjectFolder
-    );
-
-    // 4. Обновляем запись, сохраняем путь
+    // 3. Делаем ОДИН запрос INSERT, где ID и путь уже заполнены
     await pool.query(
-      `UPDATE projects SET file_path_root = $1 WHERE id = $2`,
-      [projectPath, projectId]
+      `INSERT INTO projects (id, doctor_id, patient_name, doctor_display_name, file_path_root) 
+       VALUES ($1, $2, $3, $4, $5)`,
+      [projectId, doctor_id, sPatient, sDocName, projectPath]
     );
 
-    // 5. Создаём физическую структуру папок и копируем файлы
+    // 4. Создаем папки и файлы (как и раньше)
     if (files && files.length > 0) {
       const stlFolder = path.join(projectPath, 'stl');
-      if (!fs.existsSync(stlFolder)) {
-        fs.mkdirSync(stlFolder, { recursive: true });
-      }
+      if (!fs.existsSync(stlFolder)) fs.mkdirSync(stlFolder, { recursive: true });
       
       files.forEach(file => {
         const targetPath = path.join(stlFolder, file.originalname);
         fs.copyFileSync(file.path, targetPath);
-        fs.unlinkSync(file.path); // удаляем временный файл
+        fs.unlinkSync(file.path);
       });
     }
 
