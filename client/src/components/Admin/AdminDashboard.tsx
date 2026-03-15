@@ -171,7 +171,7 @@ export const AdminDashboard: React.FC = () => {
     if (!editingProject) return;
     setLoading(true);
 
-    const doc = doctors.find((d) => d.id === editingProject.doctor_id);
+    const doc = doctors.find((d) => String(d.id) === String(editingProject.doctor_id));
 
     const data = new FormData();
     data.append('doctor_id', editingProject.doctor_id);

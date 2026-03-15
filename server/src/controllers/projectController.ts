@@ -11,7 +11,7 @@ const getParamAsString = (param: any): string => {
   return param || '';
 };
 
-// 1. ПОЛУЧЕНИЕ СПИСКА ПРОЕКТОВ (Главное исправление здесь)
+// 1. ПОЛУЧЕНИЕ СПИСКА ПРОЕКТОВ
 export const getProjects = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Не авторизован" });
@@ -21,7 +21,6 @@ export const getProjects = async (req: AuthRequest, res: Response) => {
     let query = "SELECT * FROM projects ORDER BY created_at DESC";
     let params: any[] = [];
 
-    // Если это доктор, показываем только ЕГО проекты, используя ID из ТОКЕНА
     if (role === 'doctor') {
       query = "SELECT * FROM projects WHERE doctor_id = $1 ORDER BY created_at DESC";
       params = [userId];
@@ -35,7 +34,7 @@ export const getProjects = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// 2. СОЗДАНИЕ ПРОЕКТА
+// 2. СОЗДАНИЕ ПРОЕКТА (УНИКАЛЬНЫЙ ПУТЬ НА ОСНОВЕ ID)
 export const createProject = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ message: "Не авторизован" });
@@ -43,7 +42,6 @@ export const createProject = async (req: AuthRequest, res: Response) => {
     const { country, city, clinic, department, doctor_name, patient_name } = req.body;
     const files = req.files as Express.Multer.File[];
     
-    // Привязываем проект к ID того, кто сейчас залогинен
     const doctor_id = req.user.userId;
 
     const sCountry = country || 'Unknown_Country';
@@ -53,23 +51,44 @@ export const createProject = async (req: AuthRequest, res: Response) => {
     const sDocName = doctor_name || 'Unknown_Doctor';
     const sPatient = patient_name || 'Unknown_Patient';
 
-    const projectPath = createProjectPath(sCountry, sCity, sClinic, sDept, sDocName, sPatient);
-
-    const result = await pool.query(
-      `INSERT INTO projects (doctor_id, patient_name, doctor_display_name, file_path_root) 
-      VALUES ($1, $2, $3, $4) RETURNING id`,
-      [doctor_id, sPatient, sDocName, projectPath] 
+    // 1. Вставляем запись без пути (пока неизвестен ID)
+    const insertResult = await pool.query(
+      `INSERT INTO projects (doctor_id, patient_name, doctor_display_name) 
+       VALUES ($1, $2, $3) RETURNING id`,
+      [doctor_id, sPatient, sDocName]
     );
-    const projectId = result.rows[0].id;
+    const projectId = insertResult.rows[0].id;
 
+    // 2. Формируем уникальное имя папки на основе ID проекта
+    const uniqueProjectFolder = `project_${projectId}`;
+
+    // 3. Строим полный путь к проекту, используя уникальную папку вместо имени пациента
+    const projectPath = createProjectPath(
+      sCountry,
+      sCity,
+      sClinic,
+      sDept,
+      sDocName,
+      uniqueProjectFolder
+    );
+
+    // 4. Обновляем запись, сохраняем путь
+    await pool.query(
+      `UPDATE projects SET file_path_root = $1 WHERE id = $2`,
+      [projectPath, projectId]
+    );
+
+    // 5. Создаём физическую структуру папок и копируем файлы
     if (files && files.length > 0) {
       const stlFolder = path.join(projectPath, 'stl');
-      if (!fs.existsSync(stlFolder)) fs.mkdirSync(stlFolder, { recursive: true });
+      if (!fs.existsSync(stlFolder)) {
+        fs.mkdirSync(stlFolder, { recursive: true });
+      }
       
       files.forEach(file => {
         const targetPath = path.join(stlFolder, file.originalname);
-        fs.copyFileSync(file.path, targetPath); 
-        fs.unlinkSync(file.path); 
+        fs.copyFileSync(file.path, targetPath);
+        fs.unlinkSync(file.path); // удаляем временный файл
       });
     }
 
