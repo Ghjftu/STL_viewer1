@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
-import bcrypt from 'bcrypt';
+//import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { generateToken } from '../utils/auth';
 
 export const login = async (req: Request, res: Response) => {

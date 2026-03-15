@@ -14,7 +14,8 @@ const PORT = process.env.PORT || 8000;
 
 // 1. Настройки безопасности и парсинга
 app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // 2. Раздача папки с 3D-моделями (это оставляем, это нужно!)
 app.use('/storage', express.static(path.join(__dirname, '../storage')));
