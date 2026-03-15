@@ -12,6 +12,35 @@ export const AdminDashboard: React.FC = () => {
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Функция транслитерации кириллицы в латиницу
+  const transliterate = (text: string): string => {
+    const map: Record<string, string> = {
+      'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+      'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+      'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+      'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+      'ъ': '', 'ы': 'y', 'ь': "'", 'э': 'e', 'ю': 'yu', 'я': 'ya',
+      'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'Yo',
+      'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+      'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+      'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Sch',
+      'Ъ': '', 'Ы': 'Y', 'Ь': "'", 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
+    };
+    return text.replace(/[а-яА-ЯёЁ]/g, (ch) => map[ch] || ch);
+  };
+
+  // Создаёт новые файлы с транслитерированными именами
+  const getTransliteratedFiles = (files: FileList): File[] => {
+    return Array.from(files).map(file => {
+      const lastDotIndex = file.name.lastIndexOf('.');
+      const baseName = lastDotIndex !== -1 ? file.name.substring(0, lastDotIndex) : file.name;
+      const ext = lastDotIndex !== -1 ? file.name.substring(lastDotIndex) : '';
+      const newBaseName = transliterate(baseName);
+      const newName = newBaseName + ext;
+      return new File([file], newName, { type: file.type });
+    });
+  };
+
   // Функция для обработки неавторизованных запросов (401/403)
   const handleUnauthorized = () => {
     localStorage.removeItem('token');
@@ -166,7 +195,7 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Updated update handler with file upload support
+  // Updated update handler with file upload support and transliteration
   const handleUpdateProject = async () => {
     if (!editingProject) return;
     setLoading(true);
@@ -178,8 +207,10 @@ export const AdminDashboard: React.FC = () => {
     data.append('doctor_name', doc ? doc.full_name : 'Unknown');
     data.append('patient_name', editingProject.patient_name);
 
+    // Добавляем новые файлы с транслитерированными именами
     if (newFiles) {
-      Array.from(newFiles).forEach((file) => data.append('files', file));
+      const filesToSend = getTransliteratedFiles(newFiles);
+      filesToSend.forEach((file) => data.append('files', file));
     }
 
     try {
@@ -287,9 +318,14 @@ export const AdminDashboard: React.FC = () => {
                     </button>
                     <button
                       onClick={() => window.open(`/viewer/${p.id}?mode=sketches`, '_blank')}
-                      className="bg-orange-500 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase"
+                      className="bg-orange-500 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase flex items-center gap-1"
                     >
                       Скетчи
+                      {p.unread_sketches_count > 0 && (
+                        <span className="ml-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[8px] font-bold">
+                          {p.unread_sketches_count}
+                        </span>
+                      )}
                     </button>
                     <button
                       onClick={() => {
@@ -356,7 +392,7 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="mb-6">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
-                Добавить новые STL-файлы
+                Добавить новые STL-файлы (имена будут транслитерированы)
               </label>
               <input
                 type="file"
@@ -365,6 +401,11 @@ export const AdminDashboard: React.FC = () => {
                 onChange={(e) => setNewFiles(e.target.files)}
                 className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
               />
+              {newFiles && newFiles.length > 0 && (
+                <div className="mt-2 text-xs text-gray-600">
+                  Будет загружено файлов: {newFiles.length} (с транслитерированными именами)
+                </div>
+              )}
             </div>
 
             <div className="flex gap-3 justify-end">

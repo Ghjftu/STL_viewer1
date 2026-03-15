@@ -169,10 +169,24 @@ const STLMesh: React.FC<{
         isTransparent ? (
           <React.Fragment key={geometryIndex}>
             <mesh geometry={geometry} renderOrder={1}>
-              <meshStandardMaterial color={model.color} transparent opacity={model.opacity} side={THREE.BackSide} depthWrite depthTest />
+              <meshStandardMaterial
+                color={model.color}
+                transparent
+                opacity={model.opacity}
+                side={THREE.BackSide}
+                depthWrite
+                depthTest
+              />
             </mesh>
             <mesh geometry={geometry} renderOrder={2}>
-              <meshStandardMaterial color={model.color} transparent opacity={model.opacity} side={THREE.FrontSide} depthWrite={false} depthTest />
+              <meshStandardMaterial
+                color={model.color}
+                transparent
+                opacity={model.opacity}
+                side={THREE.FrontSide}
+                depthWrite={false}
+                depthTest
+              />
             </mesh>
           </React.Fragment>
         ) : (
@@ -303,7 +317,7 @@ const Rulers: React.FC<{
         <rect x="0" y="0" width="100%" height={RULER_THICKNESS} fill="rgba(30,30,30,0.85)" />
         <line x1="0" y1="0" x2="100%" y2="0" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
         {ticksX.map((tick, index) => {
-          const halfTickX = (((tick.value - stepX / 2) + halfWorldWidth) / worldWidth) * size.width;
+          const halfTickX = ((tick.value - stepX / 2 + halfWorldWidth) / worldWidth) * size.width;
 
           return (
             <g key={`horizontal-${index}`}>
@@ -323,7 +337,8 @@ const Rulers: React.FC<{
         <rect x="0" y="0" width={RULER_THICKNESS} height="100%" fill="rgba(30,30,30,0.85)" />
         <line x1={RULER_THICKNESS} y1="0" x2={RULER_THICKNESS} y2="100%" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
         {ticksY.map((tick, index) => {
-          const halfTickY = size.height - (((tick.value + stepY / 2) + halfWorldHeight) / worldHeight) * size.height;
+          const halfTickY =
+            size.height - ((tick.value + stepY / 2 + halfWorldHeight) / worldHeight) * size.height;
 
           return (
             <g key={`vertical-${index}`}>
@@ -331,7 +346,15 @@ const Rulers: React.FC<{
                 <line x1={RULER_THICKNESS - 5} y1={halfTickY} x2={RULER_THICKNESS} y2={halfTickY} stroke="rgba(255,255,255,0.3)" strokeWidth="1" />
               )}
               <line x1={RULER_THICKNESS - 10} y1={tick.y} x2={RULER_THICKNESS} y2={tick.y} stroke="rgba(255,255,255,0.7)" strokeWidth="1" />
-              <text x={RULER_THICKNESS - 12} y={tick.y + 3} fill="rgba(255,255,255,0.8)" fontSize="9" textAnchor="end" dominantBaseline="middle" fontFamily="monospace">
+              <text
+                x={RULER_THICKNESS - 12}
+                y={tick.y + 3}
+                fill="rgba(255,255,255,0.8)"
+                fontSize="9"
+                textAnchor="end"
+                dominantBaseline="middle"
+                fontFamily="monospace"
+              >
                 {formatValue(tick.value)}
               </text>
             </g>
@@ -371,7 +394,6 @@ const Viewer3DScene: React.FC<{
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const transparentGroupRefs = useRef<(THREE.Group | null)[]>([]);
-  const hasCentered = useRef(false);
   const lastTouchEndTimeRef = useRef(0);
   const latestModelsRef = useRef<STLModel[]>([]);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -380,6 +402,12 @@ const Viewer3DScene: React.FC<{
   const activeTouchPointersRef = useRef<Set<number>>(new Set());
   const gestureModeRef = useRef<'none' | 'tool' | 'controls'>('none');
   const viewportSizeRef = useRef({ width: 0, height: 0 });
+
+  // Флаги для центрирования
+  const isCenteringRef = useRef(false);
+  const centeringCancelRef = useRef(false);
+  const hasCentered = useRef(false);
+  const userInteracted = useRef(false);
 
   const tools = useMemo(
     () => [
@@ -452,7 +480,10 @@ const Viewer3DScene: React.FC<{
     return new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cameraRef.current);
   }, []);
 
-  const calculateDistance = useCallback((pointA: Point, pointB: Point) => unprojectPoint(pointA).distanceTo(unprojectPoint(pointB)), [unprojectPoint]);
+  const calculateDistance = useCallback(
+    (pointA: Point, pointB: Point) => unprojectPoint(pointA).distanceTo(unprojectPoint(pointB)),
+    [unprojectPoint]
+  );
 
   const calculateAngle = useCallback(
     (pointA: Point, pointB: Point, pointC: Point) => {
@@ -482,7 +513,6 @@ const Viewer3DScene: React.FC<{
     [unprojectPoint]
   );
 
-
   useEffect(() => {
     currentPointsRef.current = currentPoints;
   }, [currentPoints]);
@@ -497,7 +527,7 @@ const Viewer3DScene: React.FC<{
           return;
         }
 
-        const userText = window.prompt('Введите текст');
+        const userText = window.prompt(' ');
         if (userText && userText.trim() !== '') {
           const newId = textCounter + 1;
           setTextCounter(newId);
@@ -526,7 +556,10 @@ const Viewer3DScene: React.FC<{
         }
 
         const distance = calculateDistance(currentPoints[0], point);
-        setDrawings((previous) => [...previous, { type: 'ruler', points: [currentPoints[0], point], value: Number(distance.toFixed(1)) }]);
+        setDrawings((previous) => [
+          ...previous,
+          { type: 'ruler', points: [currentPoints[0], point], value: Number(distance.toFixed(1)) },
+        ]);
         setCurrentPoints([]);
         return;
       }
@@ -559,6 +592,174 @@ const Viewer3DScene: React.FC<{
     [activeTool, calculateAngle, calculateCircleDiameter, calculateDistance, currentPoints, textCounter]
   );
 
+  // ========== ЦЕНТРИРОВАНИЕ КАМЕРЫ ==========
+  const centerCameraOnModels = useCallback(async (): Promise<void> => {
+    if (stlModels.length === 0 || isCenteringRef.current || hasCentered.current || userInteracted.current) return;
+
+    isCenteringRef.current = true;
+    centeringCancelRef.current = false;
+
+    const loader = new STLLoader();
+
+    try {
+      const results = await Promise.allSettled(
+        stlModels.map(async (model) => {
+          if (centeringCancelRef.current || userInteracted.current) throw new Error('Cancelled');
+
+          const geometry = await new Promise<THREE.BufferGeometry>((resolve, reject) => {
+            loader.load(model.url, resolve, undefined, reject);
+          });
+
+          if (centeringCancelRef.current || userInteracted.current) throw new Error('Cancelled');
+
+          geometry.computeBoundingBox();
+          if (!geometry.boundingBox) return null;
+
+          const position = new THREE.Vector3(...model.position);
+          const rotation = new THREE.Euler(
+            THREE.MathUtils.degToRad(model.rotation[0]),
+            THREE.MathUtils.degToRad(model.rotation[1]),
+            THREE.MathUtils.degToRad(model.rotation[2]),
+            'XYZ'
+          );
+          const matrix = new THREE.Matrix4().compose(
+            position,
+            new THREE.Quaternion().setFromEuler(rotation),
+            new THREE.Vector3(1, 1, 1)
+          );
+          const center = geometry.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(matrix);
+          const corners = [
+            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.min.y, geometry.boundingBox.min.z),
+            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.min.y, geometry.boundingBox.max.z),
+            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.max.y, geometry.boundingBox.min.z),
+            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.max.y, geometry.boundingBox.max.z),
+            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.min.y, geometry.boundingBox.min.z),
+            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.min.y, geometry.boundingBox.max.z),
+            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.max.y, geometry.boundingBox.min.z),
+            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.max.y, geometry.boundingBox.max.z),
+          ].map((corner) => corner.applyMatrix4(matrix));
+
+          return { center, corners };
+        })
+      );
+
+      if (centeringCancelRef.current || userInteracted.current || !cameraRef.current || !controlsRef.current) {
+        return;
+      }
+
+      const items = results
+        .filter((result): result is PromiseFulfilledResult<{ center: THREE.Vector3; corners: THREE.Vector3[] } | null> => result.status === 'fulfilled')
+        .map((result) => result.value)
+        .filter((item): item is { center: THREE.Vector3; corners: THREE.Vector3[] } => item !== null);
+
+      if (items.length === 0) {
+        return;
+      }
+
+      // Общий центр масс
+      const focus = items.reduce((sum, item) => sum.add(item.center), new THREE.Vector3()).divideScalar(items.length);
+      const camera = cameraRef.current;
+      const target = controlsRef.current.target instanceof THREE.Vector3 ? controlsRef.current.target.clone() : new THREE.Vector3(0, 0, 0);
+      const direction = camera.position.clone().sub(target);
+      const safeDirection = direction.lengthSq() > 0 ? direction.normalize() : new THREE.Vector3(0, 0, 1);
+      const distanceToTarget = camera.position.distanceTo(target) || 150;
+      const nextCameraPosition = focus.clone().add(safeDirection.clone().multiplyScalar(distanceToTarget));
+
+      // Поворот камеры в мировых координатах
+      const cameraQuaternion = camera.quaternion.clone();
+      const inverseCameraQuaternion = cameraQuaternion.clone().invert();
+
+      let maxOffsetX = 1;
+      let maxOffsetY = 1;
+
+      items.forEach((item) => {
+        item.corners.forEach((corner) => {
+          const relativeCorner = corner.clone().sub(focus);
+          const projectedCorner = relativeCorner.applyQuaternion(inverseCameraQuaternion);
+          maxOffsetX = Math.max(maxOffsetX, Math.abs(projectedCorner.x));
+          maxOffsetY = Math.max(maxOffsetY, Math.abs(projectedCorner.y));
+        });
+      });
+
+      const padding = 1.2;
+      const frustumWidth = Math.abs(camera.right - camera.left) || viewportSizeRef.current.width || 1;
+      const frustumHeight = Math.abs(camera.top - camera.bottom) || viewportSizeRef.current.height || 1;
+      const requiredWidth = maxOffsetX * 2 * padding;
+      const requiredHeight = maxOffsetY * 2 * padding;
+      const zoomX = frustumWidth / requiredWidth;
+      const zoomY = frustumHeight / requiredHeight;
+      const nextZoom = Math.max(Math.min(zoomX, zoomY), 0.01);
+
+      controlsRef.current.target.copy(focus);
+      camera.position.copy(nextCameraPosition);
+      camera.lookAt(focus);
+      camera.zoom = nextZoom;
+      camera.updateProjectionMatrix();
+      controlsRef.current.update();
+
+      hasCentered.current = true;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Cancelled') {
+        console.log('Centering cancelled by user interaction');
+      } else {
+        console.error('Centering failed', error);
+      }
+    } finally {
+      isCenteringRef.current = false;
+    }
+  }, [stlModels]);
+
+  // Эффект, который запускает центрирование с повторными попытками
+  useEffect(() => {
+    if (stlModels.length === 0) return;
+
+    let attempts = 0;
+    const maxAttempts = 30;
+    const interval = 100;
+
+    const tryCenter = () => {
+      if (cameraRef.current && controlsRef.current) {
+        centerCameraOnModels().catch(() => {});
+      } else if (attempts < maxAttempts) {
+        attempts++;
+        setTimeout(tryCenter, interval);
+      } else {
+        console.warn('Failed to center camera: camera or controls not available');
+      }
+    };
+
+    tryCenter();
+
+    return () => {
+      centeringCancelRef.current = true;
+    };
+  }, [stlModels, centerCameraOnModels]);
+
+  // Сброс флагов при смене projectId
+  useEffect(() => {
+    centeringCancelRef.current = false;
+    hasCentered.current = false;
+    userInteracted.current = false;
+    transparentGroupRefs.current = [];
+  }, [projectId]);
+
+  // Прямой обработчик wheel для гарантированного перехвата жестов на тачпаде
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const onWheel = () => {
+      userInteracted.current = true;
+      centeringCancelRef.current = true;
+    };
+
+    viewport.addEventListener('wheel', onWheel, { passive: true });
+    return () => {
+      viewport.removeEventListener('wheel', onWheel);
+    };
+  }, []);
+
+  // ========== ОСТАЛЬНЫЕ ЭФФЕКТЫ ==========
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) return;
@@ -566,11 +767,6 @@ const Viewer3DScene: React.FC<{
     localStorage.setItem('returnUrl', currentPath);
     navigate('/', { replace: true });
   }, [currentPath, navigate]);
-
-  useEffect(() => {
-    hasCentered.current = false;
-    transparentGroupRefs.current = [];
-  }, [projectId]);
 
   useEffect(() => {
     setLoading(true);
@@ -617,80 +813,6 @@ const Viewer3DScene: React.FC<{
         setLoading(false);
       });
   }, [currentPath, navigate, persistSceneStateLocally, projectId]);
-
-  useEffect(() => {
-    if (!controlsRef.current || !cameraRef.current || hasCentered.current || stlModels.length === 0) return;
-
-    const loader = new STLLoader();
-    let cancelled = false;
-
-    const centerCameraOnModels = async () => {
-      const worldBoxes: THREE.Box3[] = [];
-      const centers: THREE.Vector3[] = [];
-
-      await Promise.all(
-        stlModels.map(async (model) => {
-          try {
-            const geometry = await new Promise<THREE.BufferGeometry>((resolve, reject) => {
-              loader.load(model.url, resolve, undefined, reject);
-            });
-
-            geometry.computeBoundingBox();
-            const mesh = new THREE.Mesh(geometry);
-            mesh.position.set(...model.position);
-            mesh.rotation.set(
-              THREE.MathUtils.degToRad(model.rotation[0]),
-              THREE.MathUtils.degToRad(model.rotation[1]),
-              THREE.MathUtils.degToRad(model.rotation[2])
-            );
-            mesh.updateMatrixWorld(true);
-
-            const worldBox = new THREE.Box3().setFromObject(mesh);
-            if (!worldBox.isEmpty()) {
-              worldBoxes.push(worldBox);
-              centers.push(worldBox.getCenter(new THREE.Vector3()));
-            }
-          } catch {
-            return;
-          }
-        })
-      );
-
-      if (cancelled || worldBoxes.length === 0 || centers.length === 0 || !cameraRef.current || !controlsRef.current) {
-        return;
-      }
-
-      const focus = centers.reduce((sum, center) => sum.add(center), new THREE.Vector3()).divideScalar(centers.length);
-      const camera = cameraRef.current;
-      const combined = new THREE.Box3();
-      worldBoxes.forEach((box) => combined.union(box));
-
-      const width = Math.max(combined.max.x - combined.min.x, 1);
-      const height = Math.max(combined.max.y - combined.min.y, 1);
-      const padding = 1.2;
-      const baseWorldWidth = Math.abs(camera.right - camera.left) || viewportSizeRef.current.width || 1;
-      const baseWorldHeight = Math.abs(camera.top - camera.bottom) || viewportSizeRef.current.height || 1;
-      const zoomX = baseWorldWidth / (width * padding);
-      const zoomY = baseWorldHeight / (height * padding);
-      const nextZoom = Math.max(Math.min(zoomX, zoomY), 0.01);
-      const distanceToTarget = camera.position.distanceTo(controlsRef.current.target || new THREE.Vector3(0, 0, 0));
-      const direction = camera.position.clone().sub(controlsRef.current.target || new THREE.Vector3(0, 0, 0)).normalize();
-      const safeDirection = Number.isFinite(direction.lengthSq()) && direction.lengthSq() > 0 ? direction : new THREE.Vector3(0, 0, 1);
-
-      controlsRef.current.target.copy(focus);
-      camera.position.copy(focus.clone().add(safeDirection.multiplyScalar(distanceToTarget || 150)));
-      camera.zoom = nextZoom;
-      camera.updateProjectionMatrix();
-      controlsRef.current.update();
-      hasCentered.current = true;
-    };
-
-    void centerCameraOnModels();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [stlModels]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -747,7 +869,9 @@ const Viewer3DScene: React.FC<{
   const updateModelProperty = (modelId: ModelId, field: 'color' | 'opacity', value: string | number) => {
     setStlModels((previousModels) => {
       const normalizedValue = field === 'opacity' ? clampOpacity(Number(value)) : String(value);
-      const updatedModels = previousModels.map((model) => (model.id === modelId ? { ...model, [field]: normalizedValue } : model));
+      const updatedModels = previousModels.map((model) =>
+        model.id === modelId ? { ...model, [field]: normalizedValue } : model
+      );
 
       persistSceneStateLocally(updatedModels);
       scheduleSceneStateSync(updatedModels);
@@ -775,7 +899,7 @@ const Viewer3DScene: React.FC<{
   };
 
   const handleClearAll = () => {
-    if (!window.confirm('Очистить все измерения и заметки?')) return;
+    if (!window.confirm('    ?')) return;
 
     setDrawings([]);
     setCurrentPoints([]);
@@ -785,11 +909,11 @@ const Viewer3DScene: React.FC<{
 
   const handleFinish = async () => {
     if (drawings.length === 0) {
-      window.alert('Сначала добавьте хотя бы одно измерение или заметку.');
+      window.alert('       .');
       return;
     }
 
-    if (!window.confirm('Сохранить текущие пометки?')) {
+    if (!window.confirm('  ?')) {
       return;
     }
 
@@ -810,6 +934,7 @@ const Viewer3DScene: React.FC<{
       canvasData: drawings,
       textNotes,
       svgContent: svgRef.current ? svgRef.current.outerHTML : null,
+      modelsState: serializeSceneState(stlModels),
     };
 
     try {
@@ -825,18 +950,18 @@ const Viewer3DScene: React.FC<{
 
       if (!response.ok) {
         const error = await response.json();
-        window.alert(`Ошибка: ${error.message}`);
+        window.alert(`: ${error.message}`);
         return;
       }
 
-      window.alert('Пометки сохранены.');
+      window.alert(' .');
       setActiveTool('none');
       setDrawings([]);
       setCurrentPoints([]);
       setTextNotes([]);
       setIsDrawingBrush(false);
     } catch {
-      window.alert('Не удалось сохранить пометки.');
+      window.alert('   .');
     }
   };
 
@@ -845,8 +970,16 @@ const Viewer3DScene: React.FC<{
     return Boolean(target.closest('button, input, select, textarea, [data-ui-control="true"]'));
   };
 
+  const handleWheel = useCallback(() => {
+    userInteracted.current = true;
+    centeringCancelRef.current = true;
+  }, []);
+
   const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isInteractiveUiTarget(event.target)) return;
+
+    userInteracted.current = true;
+    centeringCancelRef.current = true;
 
     if (event.pointerType === 'touch') {
       activeTouchPointersRef.current.add(event.pointerId);
@@ -911,7 +1044,10 @@ const Viewer3DScene: React.FC<{
 
     if (activeTool === 'brush') {
       setIsDrawingBrush(false);
-      setDrawings((previous) => [...previous, { type: 'brush', points: [...currentPointsRef.current, point], color: 'red' }]);
+      setDrawings((previous) => [
+        ...previous,
+        { type: 'brush', points: [...currentPointsRef.current, point], color: 'red' },
+      ]);
       setCurrentPoints([]);
       event.preventDefault();
       event.stopPropagation();
@@ -964,19 +1100,30 @@ const Viewer3DScene: React.FC<{
         onPointerMoveCapture={handlePointerMoveCapture}
         onPointerUpCapture={handlePointerUpCapture}
         onPointerCancelCapture={handlePointerCancelCapture}
+        onWheel={handleWheel}
       >
-        <Canvas className="h-full w-full" gl={{ antialias: true, alpha: false }} onCreated={({ gl }) => gl.setClearColor('#ffffff')} style={{ touchAction: 'none' }}>
+        <Canvas
+          className="h-full w-full"
+          gl={{ antialias: true, alpha: false }}
+          onCreated={({ gl }) => gl.setClearColor('#ffffff')}
+          style={{ touchAction: 'none' }}
+        >
           <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
           <CameraTracker cameraRef={cameraRef} />
+
+          {/* ArcballControls с исправленными настройками */}
           <ArcballControls
             ref={controlsRef}
+            makeDefault
             enabled
             enablePan={false}
             enableRotate
             enableZoom
-            enableAnimations={false}
-            cursorZoom
+            cursorZoom={false}
+            enableAnimations={true}
+            focusAnimationTime={0.1}
           />
+
           <ambientLight intensity={0.6} />
           <directionalLight position={[50, 50, 50]} intensity={1.5} />
           <directionalLight position={[-50, -50, -50]} intensity={0.5} />
@@ -991,7 +1138,10 @@ const Viewer3DScene: React.FC<{
           <CameraParamsUpdater cameraRef={cameraRef} onUpdate={handleCameraUpdate} />
         </Canvas>
 
-        <div className="absolute left-1/2 top-4 z-20 flex max-w-2xl -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-2xl border border-gray-600 bg-gray-800/90 px-4 py-2 text-white shadow-xl sm:rounded-full sm:px-6" data-ui-control="true">
+        <div
+          className="absolute left-1/2 top-4 z-20 flex max-w-2xl -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-2xl border border-gray-600 bg-gray-800/90 px-4 py-2 text-white shadow-xl sm:rounded-full sm:px-6"
+          data-ui-control="true"
+        >
           <span className="text-xs text-gray-400 sm:text-sm">Patient:</span>
           <span className="text-sm font-bold text-blue-400">{project.patient_name}</span>
           <div className="hidden h-4 w-px bg-gray-600 sm:block" />
@@ -1008,7 +1158,11 @@ const Viewer3DScene: React.FC<{
         </button>
 
         {showModelSettings && (
-          <div ref={settingsPanelRef} className="absolute right-4 top-20 z-30 max-h-[80vh] w-80 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 p-4 shadow-2xl" data-ui-control="true">
+          <div
+            ref={settingsPanelRef}
+            className="absolute right-4 top-20 z-30 max-h-[80vh] w-80 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 p-4 shadow-2xl"
+            data-ui-control="true"
+          >
             <h3 className="mb-3 border-b border-gray-600 pb-2 text-lg font-bold">Models</h3>
             <div className="space-y-4">
               {stlModels.map((model) => (
@@ -1058,7 +1212,9 @@ const Viewer3DScene: React.FC<{
                 }}
                 className={[
                   'group relative flex h-10 w-10 items-center justify-center rounded-xl text-lg transition-all sm:h-12 sm:w-12 sm:text-xl',
-                  activeTool === tool.id ? 'scale-110 bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.5)]' : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
+                  activeTool === tool.id
+                    ? 'scale-110 bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.5)]'
+                    : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
                 ].join(' ')}
               >
                 {tool.icon}
@@ -1070,15 +1226,26 @@ const Viewer3DScene: React.FC<{
 
             <div className="mx-1 h-8 w-px bg-gray-600 sm:mx-2" />
 
-            <button onClick={handleUndoDraw} className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12" title="Undo">
+            <button
+              onClick={handleUndoDraw}
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12"
+              title="Undo"
+            >
               ↶
             </button>
 
-            <button onClick={handleClearAll} className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12" title="Clear">
+            <button
+              onClick={handleClearAll}
+              className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12"
+              title="Clear"
+            >
               ✕
             </button>
 
-            <button onClick={handleFinish} className="h-10 rounded-xl bg-green-600 px-3 text-[10px] font-bold text-white hover:bg-green-500 sm:h-12 sm:px-4 sm:text-xs">
+            <button
+              onClick={handleFinish}
+              className="h-10 rounded-xl bg-green-600 px-3 text-[10px] font-bold text-white hover:bg-green-500 sm:h-12 sm:px-4 sm:text-xs"
+            >
               Save
             </button>
           </div>
@@ -1097,7 +1264,14 @@ const Viewer3DScene: React.FC<{
             if (drawing.type === 'ruler') {
               return (
                 <g key={index}>
-                  <line x1={drawing.points[0].x} y1={drawing.points[0].y} x2={drawing.points[1].x} y2={drawing.points[1].y} stroke="#3b82f6" strokeWidth="2" />
+                  <line
+                    x1={drawing.points[0].x}
+                    y1={drawing.points[0].y}
+                    x2={drawing.points[1].x}
+                    y2={drawing.points[1].y}
+                    stroke="#3b82f6"
+                    strokeWidth="2"
+                  />
                   <text x={drawing.points[1].x + 10} y={drawing.points[1].y} fill="#3b82f6" fontSize="16" fontWeight="bold">
                     {drawing.value} mm
                   </text>
@@ -1109,22 +1283,37 @@ const Viewer3DScene: React.FC<{
               if (drawing.points.length < 3) return null;
 
               const [point1, point2, point3] = drawing.points;
-              const determinant = 2 * (point1.x * (point2.y - point3.y) + point2.x * (point3.y - point1.y) + point3.x * (point1.y - point2.y));
+              const determinant =
+                2 * (point1.x * (point2.y - point3.y) + point2.x * (point3.y - point1.y) + point3.x * (point1.y - point2.y));
               if (Math.abs(determinant) < 1e-10) return null;
 
               const point1Squared = point1.x * point1.x + point1.y * point1.y;
               const point2Squared = point2.x * point2.x + point2.y * point2.y;
               const point3Squared = point3.x * point3.x + point3.y * point3.y;
               const centerX =
-                (point1Squared * (point2.y - point3.y) + point2Squared * (point3.y - point1.y) + point3Squared * (point1.y - point2.y)) / determinant;
+                (point1Squared * (point2.y - point3.y) +
+                  point2Squared * (point3.y - point1.y) +
+                  point3Squared * (point1.y - point2.y)) /
+                determinant;
               const centerY =
-                (point1Squared * (point3.x - point2.x) + point2Squared * (point1.x - point3.x) + point3Squared * (point2.x - point1.x)) / determinant;
+                (point1Squared * (point3.x - point2.x) +
+                  point2Squared * (point1.x - point3.x) +
+                  point3Squared * (point2.x - point1.x)) /
+                determinant;
               const radius = Math.hypot(point1.x - centerX, point1.y - centerY);
 
               return (
                 <g key={index}>
                   <circle cx={centerX} cy={centerY} r={radius} stroke="#ef4444" strokeWidth="2" fill="none" />
-                  <text x={centerX} y={centerY} fill="#ef4444" fontSize="16" fontWeight="bold" textAnchor="middle" dominantBaseline="middle">
+                  <text
+                    x={centerX}
+                    y={centerY}
+                    fill="#ef4444"
+                    fontSize="16"
+                    fontWeight="bold"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                  >
                     Ø {drawing.value}
                   </text>
                 </g>
@@ -1132,14 +1321,36 @@ const Viewer3DScene: React.FC<{
             }
 
             if (drawing.type === 'brush') {
-              return <path key={index} d={`M ${drawing.points.map((point) => `${point.x} ${point.y}`).join(' L ')}`} stroke="red" strokeWidth="2" fill="none" />;
+              return (
+                <path
+                  key={index}
+                  d={`M ${drawing.points.map((point) => `${point.x} ${point.y}`).join(' L ')}`}
+                  stroke="red"
+                  strokeWidth="2"
+                  fill="none"
+                />
+              );
             }
 
             if (drawing.type === 'angle') {
               return (
                 <g key={index}>
-                  <line x1={drawing.points[0].x} y1={drawing.points[0].y} x2={drawing.points[1].x} y2={drawing.points[1].y} stroke="yellow" strokeWidth="2" />
-                  <line x1={drawing.points[1].x} y1={drawing.points[1].y} x2={drawing.points[2].x} y2={drawing.points[2].y} stroke="yellow" strokeWidth="2" />
+                  <line
+                    x1={drawing.points[0].x}
+                    y1={drawing.points[0].y}
+                    x2={drawing.points[1].x}
+                    y2={drawing.points[1].y}
+                    stroke="yellow"
+                    strokeWidth="2"
+                  />
+                  <line
+                    x1={drawing.points[1].x}
+                    y1={drawing.points[1].y}
+                    x2={drawing.points[2].x}
+                    y2={drawing.points[2].y}
+                    stroke="yellow"
+                    strokeWidth="2"
+                  />
                   <text x={drawing.points[1].x + 10} y={drawing.points[1].y - 10} fill="yellow" fontSize="16">
                     {drawing.value}°
                   </text>
@@ -1153,9 +1364,26 @@ const Viewer3DScene: React.FC<{
 
               return (
                 <g key={index}>
-                  <line x1={drawing.target.x} y1={drawing.target.y} x2={drawing.labelPos.x} y2={drawing.labelPos.y} stroke={drawing.color} strokeWidth="1.5" strokeDasharray="4 2" />
+                  <line
+                    x1={drawing.target.x}
+                    y1={drawing.target.y}
+                    x2={drawing.labelPos.x}
+                    y2={drawing.labelPos.y}
+                    stroke={drawing.color}
+                    strokeWidth="1.5"
+                    strokeDasharray="4 2"
+                  />
                   <circle cx={drawing.target.x} cy={drawing.target.y} r={3} fill={drawing.color} />
-                  <text x={drawing.labelPos.x} y={drawing.labelPos.y} fill={drawing.color} fontSize={drawing.fontSize} fontFamily="Arial, sans-serif" fontWeight="bold" alignmentBaseline="middle" textAnchor="start">
+                  <text
+                    x={drawing.labelPos.x}
+                    y={drawing.labelPos.y}
+                    fill={drawing.color}
+                    fontSize={drawing.fontSize}
+                    fontFamily="Arial, sans-serif"
+                    fontWeight="bold"
+                    alignmentBaseline="middle"
+                    textAnchor="start"
+                  >
                     {displayText}
                   </text>
                 </g>
@@ -1165,7 +1393,9 @@ const Viewer3DScene: React.FC<{
             return null;
           })}
 
-          {activeTool === 'ruler' && currentPoints.length === 1 && <circle cx={currentPoints[0].x} cy={currentPoints[0].y} r={3} fill="blue" />}
+          {activeTool === 'ruler' && currentPoints.length === 1 && (
+            <circle cx={currentPoints[0].x} cy={currentPoints[0].y} r={3} fill="blue" />
+          )}
 
           {activeTool === 'circle' && currentPoints.length > 0 && (
             <>
@@ -1173,15 +1403,29 @@ const Viewer3DScene: React.FC<{
                 <circle key={index} cx={point.x} cy={point.y} r={4} fill="red" stroke="white" strokeWidth="1" />
               ))}
               {currentPoints.length === 2 && (
-                <line x1={currentPoints[0].x} y1={currentPoints[0].y} x2={currentPoints[1].x} y2={currentPoints[1].y} stroke="red" strokeWidth="1" strokeDasharray="4 4" />
+                <line
+                  x1={currentPoints[0].x}
+                  y1={currentPoints[0].y}
+                  x2={currentPoints[1].x}
+                  y2={currentPoints[1].y}
+                  stroke="red"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
               )}
             </>
           )}
 
-          {activeTool === 'angle' && currentPoints.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r={3} fill="yellow" />)}
+          {activeTool === 'angle' &&
+            currentPoints.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r={3} fill="yellow" />)}
 
           {activeTool === 'brush' && currentPoints.length > 0 && (
-            <path d={`M ${currentPoints.map((point) => `${point.x} ${point.y}`).join(' L ')}`} stroke="red" strokeWidth="2" fill="none" />
+            <path
+              d={`M ${currentPoints.map((point) => `${point.x} ${point.y}`).join(' L ')}`}
+              stroke="red"
+              strokeWidth="2"
+              fill="none"
+            />
           )}
 
           {activeTool === 'text' && currentPoints.length === 1 && (

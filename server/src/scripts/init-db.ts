@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import pool from '../config/db';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 export const initDb = async () => {
   try {

@@ -1,0 +1,40 @@
+{
+  "cameraState": {
+    "position": [
+      0,
+      0,
+      150
+    ],
+    "rotation": [
+      0,
+      0,
+      0,
+      "XYZ"
+    ],
+    "zoom": 9.324051129095043,
+    "viewportWidth": 1492,
+    "viewportHeight": 766
+  },
+  "canvasData": [
+    {
+      "type": "text",
+      "target": {
+        "x": 760.015625,
+        "y": 521.92578125
+      },
+      "labelPos": {
+        "x": 1025.8203125,
+        "y": 409.82421875
+      },
+      "textId": 1,
+      "color": "#ff0000",
+      "fontSize": 16
+    }
+  ],
+  "textNotes": [
+    {
+      "id": 1,
+      "text": "dhcbhdcbdhcbdcbhsjhbcljhcba bsiuhbfabcahsncsbhsbchbnschsnechsb hbe c sabh habsrahfbas chbnsahuc shcn sbchhasb chsbhcibzhcbhjbcbzjcbzjhb"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 export const getDoctors = async (req: Request, res: Response) => {
   try {
