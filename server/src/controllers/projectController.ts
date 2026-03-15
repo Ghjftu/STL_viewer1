@@ -4,6 +4,7 @@ import { createProjectPath } from '../utils/fileSystem';
 import fs from 'fs';
 import path from 'path';
 import { AuthRequest } from '../middlewares/authMiddleware';
+import { v4 as uuidv4 } from 'uuid'; // Импортируй в начале файла
 
 // Вспомогательная функция для безопасного получения строкового параметра
 const getParamAsString = (param: any): string => {
@@ -34,7 +35,7 @@ export const getProjects = async (req: AuthRequest, res: Response) => {
   }
 };
 
-import { v4 as uuidv4 } from 'uuid'; // Импортируй в начале файла
+
 
 export const createProject = async (req: AuthRequest, res: Response) => {
   try {
