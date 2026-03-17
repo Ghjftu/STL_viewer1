@@ -7,10 +7,14 @@ export const AdminDashboard: React.FC = () => {
   const [isEditModalOpen, setEditModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<any>(null);
 
-  // New states for file management
+  // States for file management (STL)
   const [existingFiles, setExistingFiles] = useState<any[]>([]);
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // NEW: States for sketch import
+  const [sketchFiles, setSketchFiles] = useState<FileList | null>(null);
+  const [isImportingSketches, setIsImportingSketches] = useState(false);
 
   // Функция транслитерации кириллицы в латиницу
   const transliterate = (text: string): string => {
@@ -246,6 +250,49 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  // NEW: Function to import old sketches (JSON + SVG files)
+  const handleImportSketches = async () => {
+    if (!editingProject || !sketchFiles || sketchFiles.length === 0) return;
+
+    setIsImportingSketches(true);
+    const data = new FormData();
+
+    // Append all selected files
+    Array.from(sketchFiles).forEach((file) => {
+      data.append('sketchFiles', file);
+    });
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/projects/${editingProject.id}/import-sketches`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+            // Content-Type is automatically set to multipart/form-data
+          },
+          body: data,
+        }
+      );
+
+      if (res.status === 401 || res.status === 403) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (res.ok) {
+        alert('Эскизы успешно импортированы!');
+        setSketchFiles(null);
+      } else {
+        alert('Ошибка при импорте эскизов');
+      }
+    } catch {
+      alert('Ошибка сети при импорте');
+    } finally {
+      setIsImportingSketches(false);
+    }
+  };
+
   if (!isAuthorized) return null;
 
   return (
@@ -363,7 +410,7 @@ export const AdminDashboard: React.FC = () => {
               />
             </div>
 
-            {/* File management section */}
+            {/* File management section (STL) */}
             <div className="mb-6">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
                 Текущие STL-файлы
@@ -408,11 +455,41 @@ export const AdminDashboard: React.FC = () => {
               )}
             </div>
 
+            {/* NEW: Sketch import section */}
+            <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-lg">
+              <label className="block text-xs font-bold text-blue-800 uppercase mb-2">
+                Импорт старых эскизов (выберите пары .json и .svg)
+              </label>
+              <input
+                type="file"
+                multiple
+                accept=".json,.svg"
+                onChange={(e) => setSketchFiles(e.target.files)}
+                className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 mb-3 cursor-pointer"
+              />
+
+              {sketchFiles && sketchFiles.length > 0 && (
+                <div className="flex flex-col gap-2 mt-2">
+                  <span className="text-xs text-blue-700 font-medium">
+                    Выбрано файлов: {sketchFiles.length}
+                  </span>
+                  <button
+                    onClick={handleImportSketches}
+                    disabled={isImportingSketches}
+                    className="w-full py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 disabled:bg-blue-300 transition flex justify-center items-center"
+                  >
+                    {isImportingSketches ? 'Загрузка...' : 'Загрузить эскизы в проект'}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => {
                   setEditModalOpen(false);
                   setNewFiles(null);
+                  setSketchFiles(null); // also clear sketch files
                 }}
                 className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
               >
@@ -423,7 +500,7 @@ export const AdminDashboard: React.FC = () => {
                 disabled={loading}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:bg-blue-300 flex items-center gap-2"
               >
-                {loading ? 'Сохранение...' : 'Сохранить'}
+                {loading ? 'Сохранение...' : 'Сохранить изменения STL'}
               </button>
             </div>
           </div>

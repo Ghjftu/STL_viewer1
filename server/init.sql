@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS sketches (
     project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
     camera_state JSONB NOT NULL,
     canvas_data JSONB NOT NULL,
-    text_notes JSONB DEFAULT '[]',      -- Массив текстовых заметок
+    text_notes JSONB DEFAULT '[]',       -- Массив текстовых заметок
+    models_state JSONB,                  -- НОВОЕ ПОЛЕ: Состояние прозрачности и цвета моделей
     folder_number INTEGER,               -- Номер папки для привязки к файловой структуре
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(project_id, folder_number)    -- Гарантирует уникальность папок в рамках проекта

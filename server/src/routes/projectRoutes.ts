@@ -10,9 +10,9 @@ import {
   getProjectById, 
   saveProjectScene,
   saveSketch,
-  // --- ДОБАВЛЯЕМ ИМПОРТ НОВЫХ ФУНКЦИЙ ---
   updateProject, 
-  deleteFile      
+  deleteFile,      
+  importSketches
 } from '../controllers/projectController';
 import { authenticateToken } from '../middlewares/authMiddleware';
 
@@ -54,6 +54,10 @@ router.post('/:id/delete-file', authenticateToken, deleteFile);
 
 // 4. СОХРАНЕНИЕ СОСТОЯНИЯ СЦЕНЫ
 router.put('/:id/scene', authenticateToken, saveProjectScene);
+
+// 5. ИМПОРТ ГОТОВЫХ ЭСКИЗОВ (.json + .svg)
+// Разрешаем загрузку до 50 файлов за раз. Поле называется 'sketchFiles', как мы указали во фронтенде!
+router.post('/:id/import-sketches', authenticateToken, upload.array('sketchFiles', 50), importSketches);
 
 
 

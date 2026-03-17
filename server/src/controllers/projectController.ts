@@ -199,7 +199,7 @@ export const saveProjectScene = async (req: Request, res: Response) => {
 export const saveSketch = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
-    const { cameraState, canvasData, svgContent, textNotes } = req.body;
+    const { cameraState, canvasData, svgContent, textNotes, modelsState } = req.body; // <--- Добавили modelsState
 
     const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
     if (projectRes.rows.length === 0) {
@@ -238,10 +238,17 @@ export const saveSketch = async (req: Request, res: Response) => {
     console.log(`✅ Эскиз сохранен в папку: ${newSketchDirPath}`);
 
     const sketchRes = await pool.query(
-      `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, folder_number) 
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [id, JSON.stringify(cameraState), JSON.stringify(canvasData), JSON.stringify(textNotes || []), nextFolderNumber]
-    );
+  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+  [
+    id, 
+    JSON.stringify(cameraState), 
+    JSON.stringify(canvasData), 
+    JSON.stringify(textNotes || []), 
+    nextFolderNumber,
+    JSON.stringify(modelsState || []) // <--- Сохраняем в БД
+  ]
+);
     const sketchId = sketchRes.rows[0].id;
 
     await pool.query(
@@ -266,21 +273,22 @@ export const getProjectSketches = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
     const result = await pool.query(
-      `SELECT id, folder_number, camera_state, canvas_data, text_notes, created_at 
-      FROM sketches 
-      WHERE project_id = $1 
-      ORDER BY folder_number ASC`,
-      [id]
-    );
+  `SELECT id, folder_number, camera_state, canvas_data, text_notes, models_state, created_at 
+  FROM sketches 
+  WHERE project_id = $1 
+  ORDER BY folder_number ASC`,
+  [id]
+);
 
-    const sketches = result.rows.map(row => ({
-      id: row.id,
-      folderNumber: row.folder_number,
-      cameraState: row.camera_state,
-      textNotes: row.text_notes,
-      createdAt: row.created_at,
-      svgUrl: `/api/projects/${id}/sketches/${row.folder_number}/svg`
-    }));
+const sketches = result.rows.map(row => ({
+  id: row.id,
+  folderNumber: row.folder_number,
+  cameraState: row.camera_state,
+  textNotes: row.text_notes,
+  modelsState: row.models_state, // <--- Передаем во фронтенд!
+  createdAt: row.created_at,
+  svgUrl: `/api/projects/${id}/sketches/${row.folder_number}/svg`
+}));
 
     res.json(sketches);
   } catch (error: any) {
@@ -311,5 +319,118 @@ export const getSketchSvg = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("❌ Ошибка получения SVG:", error);
     res.status(500).json({ message: "Ошибка сервера" });
+  }
+};
+
+// НОВЫЙ МЕТОД ДЛЯ ИМПОРТА СТАРЫХ ЭСКИЗОВ
+export const importSketches = async (req: Request, res: Response) => {
+  const files = req.files as Express.Multer.File[];
+  try {
+    const id = getParamAsString(req.params.id);
+
+    // 1. Проверяем существование проекта и находим его путь
+    const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+    if (projectRes.rows.length === 0) {
+      return res.status(404).json({ message: "Проект не найден" });
+    }
+    
+    const projectPath = projectRes.rows[0].file_path_root;
+    const sketchesBasePath = path.join(projectPath, 'sketches');
+
+    if (!fs.existsSync(sketchesBasePath)) {
+      fs.mkdirSync(sketchesBasePath, { recursive: true });
+    }
+
+    // 2. Находим текущий максимальный номер папки, чтобы продолжить нумерацию
+    let currentMaxFolder = 0;
+    const existingFolders = fs.readdirSync(sketchesBasePath, { withFileTypes: true })
+      .filter(dirent => dirent.isDirectory())
+      .map(dirent => parseInt(dirent.name))
+      .filter(num => !isNaN(num));
+
+    if (existingFolders.length > 0) {
+      currentMaxFolder = Math.max(...existingFolders);
+    }
+
+    // 3. Группируем файлы по базовому имени (например "sketch-1")
+    const fileGroups: Record<string, { json?: Express.Multer.File, svg?: Express.Multer.File }> = {};
+
+    if (files) {
+      files.forEach(file => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const baseName = path.basename(file.originalname, ext);
+        if (!fileGroups[baseName]) fileGroups[baseName] = {};
+        if (ext === '.json') fileGroups[baseName].json = file;
+        if (ext === '.svg') fileGroups[baseName].svg = file;
+      });
+    }
+
+    let importedCount = 0;
+
+    // 4. Обрабатываем каждую пару (или одиночный JSON)
+    for (const [baseName, group] of Object.entries(fileGroups)) {
+      if (!group.json) continue; // Без JSON файла не можем восстановить данные, пропускаем
+
+      try {
+        // Читаем JSON
+        const jsonContent = fs.readFileSync(group.json.path, 'utf-8');
+        const parsedData = JSON.parse(jsonContent);
+
+        // Увеличиваем номер папки
+        currentMaxFolder += 1;
+        const nextFolderNumber = currentMaxFolder;
+
+        // Создаем папку для эскиза
+        const newSketchDirPath = path.join(sketchesBasePath, nextFolderNumber.toString());
+        fs.mkdirSync(newSketchDirPath, { recursive: true });
+
+        // Если есть SVG, копируем его туда
+        if (group.svg) {
+          fs.copyFileSync(group.svg.path, path.join(newSketchDirPath, 'sketch.svg'));
+        }
+
+        const cameraState = parsedData.cameraState || null;
+const canvasData = parsedData.canvasData || null; // <--- Здесь только canvasData
+const textNotes = parsedData.textNotes || [];
+const modelsState = parsedData.modelsState || []; // <--- Вытаскиваем modelsState
+
+// Пишем в БД эскиз
+const sketchRes = await pool.query(
+  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+  [
+    id, 
+    JSON.stringify(cameraState), 
+    JSON.stringify(canvasData), 
+    JSON.stringify(textNotes), 
+    nextFolderNumber,
+    JSON.stringify(modelsState) // <--- Сохраняем настройки прозрачности и цвета
+  ]
+);
+
+        // Привязываем к ТЗ (как это делает обычное сохранение)
+        await pool.query(
+          `INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`,
+          [id, sketchRes.rows[0].id]
+        );
+
+        importedCount++;
+      } catch (err) {
+        console.error(`❌ Ошибка при обработке группы файлов ${baseName}:`, err);
+      }
+    }
+
+    res.json({ message: `Успешно импортировано эскизов: ${importedCount}` });
+
+  } catch (error: any) {
+    console.error("❌ Ошибка импорта эскизов:", error);
+    res.status(500).json({ message: "Ошибка сервера при импорте" });
+  } finally {
+    // 5. Очистка: обязательно удаляем временные файлы загруженные multer из папки uploads/
+    if (files) {
+      files.forEach(file => {
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      });
+    }
   }
 };
