@@ -25,11 +25,13 @@ interface SceneStateItem {
   opacity: number;
   position: Vector3Tuple;
   rotation: Vector3Tuple;
+  group?: string; // добавлено поле group (опционально для состояния)
 }
 
 interface STLModel extends SceneStateItem {
   name: string;
   url: string;
+  group: string; // обязательно для моделей
 }
 
 interface ProjectData {
@@ -79,6 +81,7 @@ const buildDefaultModel = (file: Partial<STLModel>): STLModel => ({
   color: typeof file.color === 'string' ? file.color : DEFAULT_MODEL_COLOR,
   position: Array.isArray(file.position) ? (file.position as Vector3Tuple) : DEFAULT_POSITION,
   rotation: Array.isArray(file.rotation) ? (file.rotation as Vector3Tuple) : DEFAULT_ROTATION,
+  group: file.group || 'Без группы', // добавлено поле group с дефолтным значением
 });
 
 const serializeSceneState = (models: STLModel[]): SceneStateItem[] =>
@@ -89,6 +92,7 @@ const serializeSceneState = (models: STLModel[]): SceneStateItem[] =>
     opacity: clampOpacity(model.opacity),
     position: model.position,
     rotation: model.rotation,
+    // group не сохраняем, так как это статическое свойство модели
   }));
 
 const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: SceneStateItem[]): STLModel[] =>
@@ -858,6 +862,34 @@ const Viewer3DScene: React.FC<{
     });
   };
 
+  const updateModelVisibility = (modelId: ModelId, visible: boolean) => {
+    setStlModels((previousModels) => {
+      const updatedModels = previousModels.map((model) =>
+        model.id === modelId ? { ...model, visible } : model
+      );
+
+      persistSceneStateLocally(updatedModels);
+      scheduleSceneStateSync(updatedModels);
+      return updatedModels;
+    });
+  };
+
+  const toggleGroupVisibility = (groupName: string) => {
+    setStlModels((previousModels) => {
+      // Определяем, есть ли в группе хотя бы одна видимая модель
+      const anyVisible = previousModels.some((m) => m.group === groupName && m.visible);
+      const newVisibility = !anyVisible; // если есть видимые, то выключаем все; если нет, включаем
+
+      const updatedModels = previousModels.map((model) =>
+        model.group === groupName ? { ...model, visible: newVisibility } : model
+      );
+
+      persistSceneStateLocally(updatedModels);
+      scheduleSceneStateSync(updatedModels);
+      return updatedModels;
+    });
+  };
+
   const handleCameraUpdate = useCallback((params: CameraParams) => {
     setCameraParams(params);
   }, []);
@@ -1082,7 +1114,7 @@ const Viewer3DScene: React.FC<{
         <Canvas
           className="h-full w-full"
           gl={{ antialias: true, alpha: false }}
-          onCreated={({ gl }) => gl.setClearColor('#ffffff')}
+          onCreated={({ gl }) => gl.setClearColor('#000000')}
           style={{ touchAction: 'none' }}
         >
           <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
@@ -1092,7 +1124,7 @@ const Viewer3DScene: React.FC<{
             ref={controlsRef}
             makeDefault
             enabled
-            enablePan={false}
+            enablePan={true}
             enableRotate
             enableZoom
             cursorZoom={false}
@@ -1141,35 +1173,75 @@ const Viewer3DScene: React.FC<{
           >
             <h3 className="mb-3 border-b border-gray-600 pb-2 text-lg font-bold">Models</h3>
             <div className="space-y-4">
-              {stlModels.map((model) => (
-                <div key={model.id} className="rounded-lg bg-gray-700 p-3">
-                  <div className="mb-2 truncate text-sm font-semibold text-blue-300" title={model.name}>
-                    {model.name}
+              {Object.entries(
+                stlModels.reduce((acc, model) => {
+                  acc[model.group] = acc[model.group] || [];
+                  acc[model.group].push(model);
+                  return acc;
+                }, {} as Record<string, STLModel[]>)
+              ).map(([groupName, groupModels]) => {
+                // Проверяем, есть ли в группе хотя бы одна видимая модель
+                const isAnyVisible = groupModels.some((m) => m.visible);
+
+                return (
+                  <div key={groupName} className="mb-4">
+                    {/* Заголовок группы с кнопкой глаза */}
+                    <div className="flex justify-between items-center mb-2 bg-gray-700 p-2 rounded">
+                      <h4 className="font-bold text-indigo-300">{groupName}</h4>
+                      <button
+                        onClick={() => toggleGroupVisibility(groupName)}
+                        className="text-xl"
+                        title={isAnyVisible ? 'Hide group' : 'Show group'}
+                      >
+                        {isAnyVisible ? '👁️' : '🚫'}
+                      </button>
+                    </div>
+
+                    {/* Модели внутри группы */}
+                    <div className="space-y-4 pl-2 border-l-2 border-gray-600">
+                      {groupModels.map((model) => (
+                        <div key={model.id} className="rounded-lg bg-gray-700 p-3">
+                          <div className="flex justify-between items-center mb-2">
+                            <div className="truncate text-sm font-semibold text-white" title={model.name}>
+                              {model.name}
+                            </div>
+                            {/* Глаз для отдельной модели */}
+                            <button
+                              onClick={() => updateModelVisibility(model.id, !model.visible)}
+                              className="text-xl"
+                              title={model.visible ? 'Hide' : 'Show'}
+                            >
+                              {model.visible ? '👁️' : '🚫'}
+                            </button>
+                          </div>
+                          <div className="mb-2 flex items-center gap-3">
+                            <span className="w-12 text-xs text-gray-400">Color</span>
+                            <input
+                              type="color"
+                              value={model.color}
+                              onChange={(event) => updateModelProperty(model.id, 'color', event.target.value)}
+                              className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-gray-900 p-0.5"
+                            />
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="w-12 text-xs text-gray-400">Opacity</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.1"
+                              value={model.opacity}
+                              onChange={(event) => updateModelProperty(model.id, 'opacity', Number(event.target.value))}
+                              className="flex-1 accent-blue-500"
+                            />
+                            <span className="w-8 text-xs text-gray-300">{Math.round(model.opacity * 100)}%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="mb-2 flex items-center gap-3">
-                    <span className="w-12 text-xs text-gray-400">Color</span>
-                    <input
-                      type="color"
-                      value={model.color}
-                      onChange={(event) => updateModelProperty(model.id, 'color', event.target.value)}
-                      className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-gray-900 p-0.5"
-                    />
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="w-12 text-xs text-gray-400">Opacity</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={model.opacity}
-                      onChange={(event) => updateModelProperty(model.id, 'opacity', Number(event.target.value))}
-                      className="flex-1 accent-blue-500"
-                    />
-                    <span className="w-8 text-xs text-gray-300">{Math.round(model.opacity * 100)}%</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

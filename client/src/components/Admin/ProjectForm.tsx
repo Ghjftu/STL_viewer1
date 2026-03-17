@@ -12,6 +12,7 @@ export const ProjectForm: React.FC = () => {
   });
   const [doctors, setDoctors] = useState<any[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [fileGroups, setFileGroups] = useState<Record<string, string>>({}); // <--- НОВЫЙ СТЕЙТ
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -84,6 +85,21 @@ export const ProjectForm: React.FC = () => {
     });
   };
 
+  // Обработка выбора файлов (обновлённая)
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    setSelectedFiles(files);
+    
+    // Инициализируем группы для всех файлов значением по умолчанию "Ткани"
+    if (files) {
+      const initialGroups: Record<string, string> = {};
+      Array.from(files).forEach(f => {
+        initialGroups[f.name] = 'Ткани';
+      });
+      setFileGroups(initialGroups);
+    }
+  };
+
   const handleCreate = async () => {
     if (!selectedFiles || !formData.doctor_id) return alert("Выберите файлы и врача");
 
@@ -101,6 +117,9 @@ export const ProjectForm: React.FC = () => {
     // Отправляем файлы с транслитерированными именами
     const filesToSend = getTransliteratedFiles(selectedFiles);
     filesToSend.forEach(file => data.append('files', file));
+
+    // НОВОЕ: Передаем словарь групп в JSON
+    data.append('file_groups', JSON.stringify(fileGroups));
 
     setLoading(true);
     try {
@@ -211,6 +230,7 @@ export const ProjectForm: React.FC = () => {
             />
           </div>
 
+          {/* Блок загрузки файлов с выбором группы */}
           <div className="border-2 border-dashed border-indigo-200 p-6 rounded-lg text-center bg-indigo-50 mt-2">
             <label className="block text-sm font-medium text-indigo-700 mb-2">Загрузите STL-файлы (до 10 шт)</label>
             <input
@@ -218,16 +238,25 @@ export const ProjectForm: React.FC = () => {
               multiple
               accept=".stl"
               className="text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200"
-              onChange={e => setSelectedFiles(e.target.files)}
+              onChange={handleFileChange} // <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
             />
-            {/* Отображение выбранных файлов (оригинальные имена) */}
+            {/* Отображение файлов с селектами групп */}
             {selectedFiles && selectedFiles.length > 0 && (
               <div className="mt-4 text-left bg-white p-3 rounded border border-indigo-100">
-                <p className="text-sm font-semibold text-indigo-800 mb-2">Выбрано файлов: {selectedFiles.length}</p>
-                <ul className="text-xs text-gray-700 space-y-1 max-h-32 overflow-y-auto">
+                <p className="text-sm font-semibold text-indigo-800 mb-2">Назначьте группы файлам:</p>
+                <ul className="text-xs text-gray-700 space-y-2 max-h-48 overflow-y-auto">
                   {Array.from(selectedFiles).map((file, idx) => (
-                    <li key={idx} className="truncate" title={file.name}>
-                      📄 {file.name}
+                    <li key={idx} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                      <span className="truncate w-1/2" title={file.name}>📄 {file.name}</span>
+                      <select 
+                        className="p-1 border rounded bg-white w-1/3"
+                        value={fileGroups[file.name] || 'Ткани'}
+                        onChange={(e) => setFileGroups({...fileGroups, [file.name]: e.target.value})}
+                      >
+                        <option value="Ткани">Ткани</option>
+                        <option value="Импланты">Импланты</option>
+                        <option value="Лекала">Лекала</option>
+                      </select>
                     </li>
                   ))}
                 </ul>

@@ -369,10 +369,10 @@ export const AdminDashboard: React.FC = () => {
                     >
                       Скетчи
                       {p.unread_sketches_count > 0 && (
-                        <span className="ml-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[8px] font-bold">
-                          {p.unread_sketches_count}
-                        </span>
-                      )}
+  <span className="ml-2 bg-red-500 text-white rounded-full px-2 py-0.5 text-[10px] font-bold animate-pulse shadow-sm">
+    +{p.unread_sketches_count}
+  </span>
+)}
                     </button>
                     <button
                       onClick={() => {

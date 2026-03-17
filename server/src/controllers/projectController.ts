@@ -102,6 +102,31 @@ export const createProject = async (req: Request, res: Response) => {
       console.log(`✅ ${files.length} STL files copied to ${stlFolder}`);
     }
 
+
+    // Читаем группы из формы
+const fileGroups = JSON.parse(req.body.file_groups || '{}');
+
+// Формируем начальное состояние сцены
+const initialSceneState = files.map((file, index) => {
+  // Находим транслитерированное имя файла, так как ключи в словаре могут быть оригинальными
+  // Либо просто используем индекс, так как порядок совпадает
+  return {
+    id: `stl-${index}`,
+    group: fileGroups[file.originalname] || 'Ткани',
+    visible: true,
+    color: '#cccccc',
+    opacity: 1,
+    position: [0, 0, 0],
+    rotation: [0, 0, 0]
+  };
+});
+
+// Сохраняем это в базу
+await pool.query(
+  "UPDATE projects SET scene_state = $1 WHERE id = $2",
+  [JSON.stringify(initialSceneState), projectId]
+);
+
     res.status(201).json({ 
       message: "Проект успешно создан", 
       projectId,
@@ -121,11 +146,29 @@ export const createProject = async (req: Request, res: Response) => {
 export const getProjects = async (req: Request, res: Response) => {
   try {
     const { userId, role } = req.query;
-    let query = "SELECT * FROM projects ORDER BY created_at DESC";
+    // Внутри запроса на список проектов
+const query = `
+  SELECT 
+    p.*, 
+    u.full_name as doctor_display_name,
+    (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
+  FROM projects p
+  LEFT JOIN users u ON p.doctor_id = u.id
+  ORDER BY p.created_at DESC
+`;
     let params: any[] = [];
 
     if (role === 'doctor' && userId) {
-      query = "SELECT * FROM projects WHERE doctor_id = $1 ORDER BY created_at DESC";
+      // Внутри запроса на список проектов
+const query = `
+  SELECT 
+    p.*, 
+    u.full_name as doctor_display_name,
+    (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
+  FROM projects p
+  LEFT JOIN users u ON p.doctor_id = u.id
+  ORDER BY p.created_at DESC
+`;
       params = [userId];
     }
 
@@ -133,6 +176,16 @@ export const getProjects = async (req: Request, res: Response) => {
     res.json(result.rows);
   } catch (error: any) {
     res.status(500).json({ message: "Ошибка получения списка" });
+  }
+};
+
+export const markSketchAsRead = async (req: Request, res: Response) => {
+  try {
+    const { sketchId } = req.params;
+    await pool.query('UPDATE sketches SET is_read = true WHERE id = $1', [sketchId]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Ошибка сервера' });
   }
 };
 
@@ -273,7 +326,7 @@ export const getProjectSketches = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
     const result = await pool.query(
-  `SELECT id, folder_number, camera_state, canvas_data, text_notes, models_state, created_at 
+  `SELECT id, folder_number, camera_state, canvas_data, text_notes, models_state, created_at, is_read
   FROM sketches 
   WHERE project_id = $1 
   ORDER BY folder_number ASC`,
@@ -287,6 +340,7 @@ const sketches = result.rows.map(row => ({
   textNotes: row.text_notes,
   modelsState: row.models_state, // <--- Передаем во фронтенд!
   createdAt: row.created_at,
+  is_read: row.is_read,
   svgUrl: `/api/projects/${id}/sketches/${row.folder_number}/svg`
 }));
 

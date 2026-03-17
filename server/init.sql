@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS sketches (
     models_state JSONB,                  -- НОВОЕ ПОЛЕ: Состояние прозрачности и цвета моделей
     folder_number INTEGER,               -- Номер папки для привязки к файловой структуре
     created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(project_id, folder_number)    -- Гарантирует уникальность папок в рамках проекта
+    UNIQUE(project_id, folder_number),    -- Гарантирует уникальность папок в рамках проекта
+    is_read BOOLEAN DEFAULT FALSE
 );
 
 -- 6. Техническое задание (Финальный документ)

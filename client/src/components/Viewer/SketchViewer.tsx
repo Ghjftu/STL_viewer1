@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
-import { OrthographicCamera } from '@react-three/drei';
+import { OrthographicCamera, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
@@ -31,6 +31,7 @@ interface SketchItem {
   id: string | number;
   folderNumber: number;
   createdAt: string;
+  is_read?: boolean;
   cameraState?: {
     position?: Vector3Tuple;
     rotation?: Vector3Tuple;
@@ -42,7 +43,7 @@ interface SketchItem {
   textNotes?: TextNote[];
 }
 
-// ========== Константы и утилиты (без изменений) ==========
+// ========== Константы и утилиты ==========
 const DEFAULT_MODEL_COLOR = '#cccccc';
 const DEFAULT_POSITION: Vector3Tuple = [0, 0, 0];
 const DEFAULT_ROTATION: Vector3Tuple = [0, 0, 0];
@@ -88,7 +89,7 @@ const mergeModelsWithState = (models: Partial<STLModel>[], sceneState: unknown) 
   });
 };
 
-// ========== 3D Компоненты (без изменений) ==========
+// ========== 3D Компоненты ==========
 const STLMesh: React.FC<{
   model: STLModel;
   index: number;
@@ -161,23 +162,41 @@ const TransparencySorter: React.FC<{
   return null;
 };
 
-const FixedCamera: React.FC<{ cameraState?: SketchItem['cameraState'] }> = ({ cameraState }) => {
+// ========== Компонент для синхронизации SVG с камерой ==========
+interface SVGSyncProps {
+  svgContainerRef: React.RefObject<HTMLDivElement | null>; // исправлен тип
+  initialCameraState: SketchItem['cameraState'];
+}
+
+const SVGSync: React.FC<SVGSyncProps> = ({ svgContainerRef, initialCameraState }) => {
   const { camera } = useThree();
+  const initialPos = useRef<THREE.Vector3 | null>(null);
+  const initialZoom = useRef<number | null>(null);
+
+  // Сохраняем начальное состояние камеры при монтировании или изменении initialCameraState
   useEffect(() => {
-    if (!cameraState) return;
-    if (camera instanceof THREE.OrthographicCamera) {
-      if (Array.isArray(cameraState.position)) {
-        camera.position.set(cameraState.position[0], cameraState.position[1], cameraState.position[2]);
-      }
-      if (Array.isArray(cameraState.rotation)) {
-        camera.rotation.set(cameraState.rotation[0], cameraState.rotation[1], cameraState.rotation[2]);
-      }
-      if (cameraState.zoom) {
-        camera.zoom = cameraState.zoom;
-      }
-      camera.updateProjectionMatrix();
+    if (camera instanceof THREE.OrthographicCamera && initialCameraState) {
+      initialPos.current = camera.position.clone();
+      initialZoom.current = camera.zoom;
     }
-  }, [camera, cameraState]);
+  }, [camera, initialCameraState]);
+
+  useFrame(() => {
+    if (!svgContainerRef.current || !(camera instanceof THREE.OrthographicCamera) || !initialPos.current || initialZoom.current === null) return;
+
+    // Вычисляем смещение относительно начальной позиции
+    const deltaX = camera.position.x - initialPos.current.x;
+    const deltaY = camera.position.y - initialPos.current.y;
+    const zoomRatio = camera.zoom / initialZoom.current;
+
+    // Масштабируем смещение в соответствии с текущим зумом (пиксели = мировые * zoom)
+    const translateX = -deltaX * camera.zoom;  // знак минус, чтобы SVG двигался в ту же сторону, что и модель
+    const translateY = deltaY * camera.zoom;
+
+    // Применяем transform
+    svgContainerRef.current.style.transform = `translate(${translateX}px, ${translateY}px) scale(${zoomRatio})`;
+  });
+
   return null;
 };
 
@@ -192,9 +211,23 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   const [loading, setLoading] = useState(true);
 
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const svgContainerRef = useRef<HTMLDivElement>(null);
   const transparentGroupRefs = useRef<(THREE.Group | null)[]>([]);
+  const cameraControlsRef = useRef<any>(null);
 
-  // Загрузка данных (без изменений)
+  // --- Функция отправки статуса "прочитано" на сервер ---
+  const markAsRead = async (sketchId: string | number) => {
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL}/projects/sketches/${sketchId}/read`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+    } catch (err) {
+      console.error('Не удалось отметить как прочитанное', err);
+    }
+  };
+
+  // Загрузка данных
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token) return;
@@ -212,7 +245,10 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
         setProjectModels(projectData.stlFiles || []);
         setProjectSceneState(parseSceneState(projectData?.project?.scene_state));
 
-        const sketchesArray = Array.isArray(sketchesData) ? sketchesData : [];
+        const sketchesArray = (Array.isArray(sketchesData) ? sketchesData : []).map((s: any) => ({
+          ...s,
+          is_read: s.is_read || false,
+        }));
         setSketches(sketchesArray);
         if (sketchesArray.length > 0) {
           loadSketchSvg(sketchesArray[0].folderNumber);
@@ -251,17 +287,22 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       .catch(console.error);
   };
 
-  const handleSketchChange = (index: number) => {
-    setCurrentSketchIndex(index);
-    const sketch = sketches[index];
-    if (sketch) {
-      loadSketchSvg(sketch.folderNumber);
+  const handleSketchSelect = (sketch: SketchItem) => {
+    const index = sketches.findIndex((s) => s.id === sketch.id);
+    if (index !== -1) {
+      setCurrentSketchIndex(index);
+    }
+    loadSketchSvg(sketch.folderNumber);
+
+    if (!sketch.is_read) {
+      markAsRead(sketch.id);
+      setSketches((prev) => prev.map((s) => (s.id === sketch.id ? { ...s, is_read: true } : s)));
     }
   };
 
   const currentSketch = sketches[currentSketchIndex];
 
-  // Модели для 3D (без изменений)
+  // Модели для 3D
   const stlModels = useMemo(() => {
     const rawSketchState = currentSketch?.modelsState || (currentSketch as any)?.models_state;
     const sketchSceneState = parseSceneState(rawSketchState);
@@ -283,7 +324,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     transparentGroupRefs.current = new Array(stlModels.length).fill(null);
   }, [stlModels]);
 
-  // Скачивание (без изменений)
+  
+  // Скачивание
   const downloadSvg = async (folderNumber: number) => {
     const token = localStorage.getItem('token');
     try {
@@ -337,21 +379,23 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     );
   }
 
-  const anchorWidth = currentSketch.cameraState?.viewportWidth || canvasContainerRef.current?.clientWidth || 800;
-  const anchorHeight = currentSketch.cameraState?.viewportHeight || canvasContainerRef.current?.clientHeight || 600;
+  const anchorWidth =
+    currentSketch.cameraState?.viewportWidth || canvasContainerRef.current?.clientWidth || 800;
+  const anchorHeight =
+    currentSketch.cameraState?.viewportHeight || canvasContainerRef.current?.clientHeight || 600;
 
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
-      {/* Левая панель: список эскизов */}
+      {/* Левая панель: список эскизов с бейджами NEW */}
       <div className="w-80 bg-gray-800 border-r border-gray-700 p-4 overflow-y-auto flex flex-col shrink-0">
         <h2 className="text-xl font-bold mb-4">Эскизы проекта</h2>
         <div className="space-y-2">
-          {sketches.map((sketch, idx) => (
+          {sketches.map((sketch) => (
             <div key={sketch.id} className="flex items-center">
               <button
-                onClick={() => handleSketchChange(idx)}
-                className={`flex-1 text-left p-3 rounded-lg transition ${
-                  idx === currentSketchIndex
+                onClick={() => handleSketchSelect(sketch)}
+                className={`flex-1 text-left p-3 rounded-lg transition relative ${
+                  sketch.id === currentSketch?.id
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-700 hover:bg-gray-600'
                 }`}
@@ -360,6 +404,14 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                 <div className="text-xs opacity-75">
                   {new Date(sketch.createdAt).toLocaleString()}
                 </div>
+                {!sketch.is_read && (
+                  <div className="absolute -top-1 -right-1 z-20">
+                    <span className="flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                    </span>
+                  </div>
+                )}
               </button>
               <div className="flex flex-col ml-2 space-y-1">
                 <button
@@ -389,14 +441,27 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       </div>
 
       {/* Центральная область: 3D + SVG */}
-      <div ref={canvasContainerRef} className="flex-1 relative overflow-hidden bg-white">
+      <div ref={canvasContainerRef} className="flex-1 relative overflow-hidden bg-black">
         <Canvas
-          className="w-full h-full absolute inset-0"
+          className="absolute inset-0 w-full h-full"
           gl={{ antialias: true, alpha: false }}
-          onCreated={({ gl }) => gl.setClearColor('#ffffff')}
+          onCreated={({ gl }) => gl.setClearColor('#000000')}
         >
           <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
-          <FixedCamera cameraState={currentSketch.cameraState} />
+          {/* Контроллер камеры */}
+          <OrbitControls
+            ref={cameraControlsRef}
+            enableRotate={false}
+            enablePan={true}
+            enableZoom={true}
+            zoomSpeed={1.2}
+            panSpeed={0.8}
+            mouseButtons={{
+              LEFT: THREE.MOUSE.PAN,
+              MIDDLE: THREE.MOUSE.DOLLY,
+              RIGHT: THREE.MOUSE.ROTATE,
+            }}
+          />
           <ambientLight intensity={0.6} />
           <directionalLight position={[50, 50, 50]} intensity={1.5} />
           <directionalLight position={[-50, -50, -50]} intensity={0.5} />
@@ -409,10 +474,26 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
             />
           ))}
           <TransparencySorter transparentGroupRefs={transparentGroupRefs} />
+
+          {/* Синхронизация SVG с камерой */}
+          {svgContent && (
+            <SVGSync
+              svgContainerRef={svgContainerRef}
+              initialCameraState={currentSketch.cameraState}
+            />
+          )}
         </Canvas>
 
+        {/* SVG оверлей (позиционируется абсолютно, трансформируется через SVGSync) */}
         {svgContent && (
-          <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible">
+          <div
+            ref={svgContainerRef}
+            className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible"
+            style={{
+              transformOrigin: 'center center',
+              willChange: 'transform',
+            }}
+          >
             <div
               style={{
                 width: anchorWidth,
@@ -424,66 +505,66 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
             />
           </div>
         )}
+
+        
       </div>
 
-      {/* Правая панель: комментарии врача с номерами из JSON */}
-<div className="w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto shrink-0">
-  <h3 className="text-lg font-semibold mb-4 flex items-center text-blue-400">
-    <svg
-      className="w-5 h-5 mr-2"
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-      />
-    </svg>
-    Комментарии врача
-  </h3>
+      {/* Правая панель: комментарии врача */}
+      <div className="w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto shrink-0">
+        <h3 className="text-lg font-semibold mb-4 flex items-center text-blue-400">
+          <svg
+            className="w-5 h-5 mr-2"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+            />
+          </svg>
+          Комментарии врача
+        </h3>
 
-  <div className="space-y-4">
-    {currentSketch.textNotes && currentSketch.textNotes.length > 0 ? (
-      currentSketch.textNotes.map((note) => (
-        <div
-          key={note.id}
-          className="flex items-start space-x-3 p-3 bg-gray-750 rounded-xl shadow-md border border-gray-700 hover:border-blue-500/50 transition-colors"
-        >
-          {/* Номер заметки из поля id (как в JSON) */}
-          <div className="flex-shrink-0 w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-            {note.id}
-          </div>
-          {/* Текст заметки */}
-          <div className="flex-1">
-            <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-              {note.text}
-            </p>
-          </div>
+        <div className="space-y-4">
+          {currentSketch.textNotes && currentSketch.textNotes.length > 0 ? (
+            currentSketch.textNotes.map((note) => (
+              <div
+                key={note.id}
+                className="flex items-start space-x-3 p-3 bg-gray-750 rounded-xl shadow-md border border-gray-700 hover:border-blue-500/50 transition-colors"
+              >
+                <div className="flex-shrink-0 w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
+                  {note.id}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
+                    {note.text}
+                  </p>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+              <svg
+                className="w-12 h-12 mb-2 opacity-50"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1}
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                />
+              </svg>
+              <p className="text-sm italic">Комментариев пока нет</p>
+            </div>
+          )}
         </div>
-      ))
-    ) : (
-      <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-        <svg
-          className="w-12 h-12 mb-2 opacity-50"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={1}
-            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-          />
-        </svg>
-        <p className="text-sm italic">Комментариев пока нет</p>
       </div>
-    )}
-  </div>
-</div>
     </div>
   );
 };

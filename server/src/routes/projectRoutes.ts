@@ -3,7 +3,7 @@ import { AuthRequest } from '../middlewares/authMiddleware';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { getProjectSketches, getSketchSvg } from '../controllers/projectController';
+import { getProjectSketches, getSketchSvg, markSketchAsRead} from '../controllers/projectController';
 import { 
   createProject, 
   getProjects, 
@@ -58,7 +58,7 @@ router.put('/:id/scene', authenticateToken, saveProjectScene);
 // 5. ИМПОРТ ГОТОВЫХ ЭСКИЗОВ (.json + .svg)
 // Разрешаем загрузку до 50 файлов за раз. Поле называется 'sketchFiles', как мы указали во фронтенде!
 router.post('/:id/import-sketches', authenticateToken, upload.array('sketchFiles', 50), importSketches);
-
+router.post('/sketches/:sketchId/read', markSketchAsRead)
 
 
 export default router;
