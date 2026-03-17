@@ -403,10 +403,10 @@ const Viewer3DScene: React.FC<{
   const gestureModeRef = useRef<'none' | 'tool' | 'controls'>('none');
   const viewportSizeRef = useRef({ width: 0, height: 0 });
 
-  // Флаги для центрирования
+  // Флаги для центрирования моделей (а не камеры)
   const isCenteringRef = useRef(false);
-  const centeringCancelRef = useRef(false);
   const hasCentered = useRef(false);
+  // Флаг для отмены центрирования при взаимодействии пользователя (если нужно)
   const userInteracted = useRef(false);
 
   const tools = useMemo(
@@ -592,29 +592,31 @@ const Viewer3DScene: React.FC<{
     [activeTool, calculateAngle, calculateCircleDiameter, calculateDistance, currentPoints, textCounter]
   );
 
-  // ========== ЦЕНТРИРОВАНИЕ КАМЕРЫ ==========
-  const centerCameraOnModels = useCallback(async (): Promise<void> => {
+  // ========== НОВАЯ ЛОГИКА ЦЕНТРИРОВАНИЯ МОДЕЛЕЙ ==========
+  const centerModelsAtOrigin = useCallback(async (): Promise<void> => {
+    // Предотвращаем повторный запуск, если уже центрировали или процесс идёт
     if (stlModels.length === 0 || isCenteringRef.current || hasCentered.current || userInteracted.current) return;
 
     isCenteringRef.current = true;
-    centeringCancelRef.current = false;
 
     const loader = new STLLoader();
 
     try {
+      // Загружаем геометрию каждой модели и вычисляем её мировой центр
       const results = await Promise.allSettled(
         stlModels.map(async (model) => {
-          if (centeringCancelRef.current || userInteracted.current) throw new Error('Cancelled');
+          if (userInteracted.current) throw new Error('Cancelled');
 
           const geometry = await new Promise<THREE.BufferGeometry>((resolve, reject) => {
             loader.load(model.url, resolve, undefined, reject);
           });
 
-          if (centeringCancelRef.current || userInteracted.current) throw new Error('Cancelled');
+          if (userInteracted.current) throw new Error('Cancelled');
 
           geometry.computeBoundingBox();
           if (!geometry.boundingBox) return null;
 
+          // Матрица трансформации модели (позиция + поворот)
           const position = new THREE.Vector3(...model.position);
           const rotation = new THREE.Euler(
             THREE.MathUtils.degToRad(model.rotation[0]),
@@ -627,77 +629,55 @@ const Viewer3DScene: React.FC<{
             new THREE.Quaternion().setFromEuler(rotation),
             new THREE.Vector3(1, 1, 1)
           );
-          const center = geometry.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(matrix);
-          const corners = [
-            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.min.y, geometry.boundingBox.min.z),
-            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.min.y, geometry.boundingBox.max.z),
-            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.max.y, geometry.boundingBox.min.z),
-            new THREE.Vector3(geometry.boundingBox.min.x, geometry.boundingBox.max.y, geometry.boundingBox.max.z),
-            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.min.y, geometry.boundingBox.min.z),
-            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.min.y, geometry.boundingBox.max.z),
-            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.max.y, geometry.boundingBox.min.z),
-            new THREE.Vector3(geometry.boundingBox.max.x, geometry.boundingBox.max.y, geometry.boundingBox.max.z),
-          ].map((corner) => corner.applyMatrix4(matrix));
 
-          return { center, corners };
+          // Центр bounding box модели в локальных координатах, затем в мировые
+          const localCenter = geometry.boundingBox.getCenter(new THREE.Vector3());
+          const worldCenter = localCenter.applyMatrix4(matrix);
+
+          return worldCenter;
         })
       );
 
-      if (centeringCancelRef.current || userInteracted.current || !cameraRef.current || !controlsRef.current) {
-        return;
-      }
+      if (userInteracted.current) return;
 
-      const items = results
-        .filter((result): result is PromiseFulfilledResult<{ center: THREE.Vector3; corners: THREE.Vector3[] } | null> => result.status === 'fulfilled')
-        .map((result) => result.value)
-        .filter((item): item is { center: THREE.Vector3; corners: THREE.Vector3[] } => item !== null);
+      // Собираем успешные центры
+      const centers = results
+        .filter((result): result is PromiseFulfilledResult<THREE.Vector3> => 
+          result.status === 'fulfilled' && result.value !== null
+        )
+        .map((result) => result.value);
 
-      if (items.length === 0) {
-        return;
-      }
+      if (centers.length === 0) return;
 
-      // Общий центр масс
-      const focus = items.reduce((sum, item) => sum.add(item.center), new THREE.Vector3()).divideScalar(items.length);
-      const camera = cameraRef.current;
-      const target = controlsRef.current.target instanceof THREE.Vector3 ? controlsRef.current.target.clone() : new THREE.Vector3(0, 0, 0);
-      const direction = camera.position.clone().sub(target);
-      const safeDirection = direction.lengthSq() > 0 ? direction.normalize() : new THREE.Vector3(0, 0, 1);
-      const distanceToTarget = camera.position.distanceTo(target) || 150;
-      const nextCameraPosition = focus.clone().add(safeDirection.clone().multiplyScalar(distanceToTarget));
+      // Вычисляем среднюю точку
+      const avg = centers.reduce((sum, v) => sum.add(v), new THREE.Vector3()).divideScalar(centers.length);
 
-      // Поворот камеры в мировых координатах
-      const cameraQuaternion = camera.quaternion.clone();
-      const inverseCameraQuaternion = cameraQuaternion.clone().invert();
+      // Сдвигаем все модели так, чтобы средняя точка оказалась в (0,0,0)
+      const updatedModels = stlModels.map((model) => ({
+        ...model,
+        position: [
+          model.position[0] - avg.x,
+          model.position[1] - avg.y,
+          model.position[2] - avg.z,
+        ] as Vector3Tuple,
+      }));
 
-      let maxOffsetX = 1;
-      let maxOffsetY = 1;
+      // Обновляем состояние
+      setStlModels(updatedModels);
+      persistSceneStateLocally(updatedModels);
+      scheduleSceneStateSync(updatedModels);
 
-      items.forEach((item) => {
-        item.corners.forEach((corner) => {
-          const relativeCorner = corner.clone().sub(focus);
-          const projectedCorner = relativeCorner.applyQuaternion(inverseCameraQuaternion);
-          maxOffsetX = Math.max(maxOffsetX, Math.abs(projectedCorner.x));
-          maxOffsetY = Math.max(maxOffsetY, Math.abs(projectedCorner.y));
-        });
-      });
-
-      const padding = 1.2;
-      const frustumWidth = Math.abs(camera.right - camera.left) || viewportSizeRef.current.width || 1;
-      const frustumHeight = Math.abs(camera.top - camera.bottom) || viewportSizeRef.current.height || 1;
-      const requiredWidth = maxOffsetX * 2 * padding;
-      const requiredHeight = maxOffsetY * 2 * padding;
-      const zoomX = frustumWidth / requiredWidth;
-      const zoomY = frustumHeight / requiredHeight;
-      const nextZoom = Math.max(Math.min(zoomX, zoomY), 0.01);
-
-      controlsRef.current.target.copy(focus);
-      camera.position.copy(nextCameraPosition);
-      camera.lookAt(focus);
-      camera.zoom = nextZoom;
-      camera.updateProjectionMatrix();
-      controlsRef.current.update();
-
+      // Устанавливаем флаг, что центрирование выполнено
       hasCentered.current = true;
+
+      // Сбрасываем камеру: направляем на ноль и возвращаем в исходное положение
+      if (cameraRef.current && controlsRef.current) {
+        cameraRef.current.position.set(0, 0, 150);
+        cameraRef.current.zoom = 2;
+        cameraRef.current.updateProjectionMatrix();
+        controlsRef.current.target.set(0, 0, 0);
+        controlsRef.current.update();
+      }
     } catch (error) {
       if (error instanceof Error && error.message === 'Cancelled') {
         console.log('Centering cancelled by user interaction');
@@ -707,9 +687,9 @@ const Viewer3DScene: React.FC<{
     } finally {
       isCenteringRef.current = false;
     }
-  }, [stlModels]);
+  }, [stlModels, persistSceneStateLocally, scheduleSceneStateSync]);
 
-  // Эффект, который запускает центрирование с повторными попытками
+  // Эффект для запуска центрирования после загрузки моделей
   useEffect(() => {
     if (stlModels.length === 0) return;
 
@@ -719,27 +699,27 @@ const Viewer3DScene: React.FC<{
 
     const tryCenter = () => {
       if (cameraRef.current && controlsRef.current) {
-        centerCameraOnModels().catch(() => {});
+        centerModelsAtOrigin().catch(() => {});
       } else if (attempts < maxAttempts) {
         attempts++;
         setTimeout(tryCenter, interval);
       } else {
-        console.warn('Failed to center camera: camera or controls not available');
+        console.warn('Failed to center models: camera or controls not available');
       }
     };
 
     tryCenter();
 
+    // Отменяем центрирование при размонтировании
     return () => {
-      centeringCancelRef.current = true;
+      userInteracted.current = true; // Отменяем загрузки, если они ещё идут
     };
-  }, [stlModels, centerCameraOnModels]);
+  }, [stlModels, centerModelsAtOrigin]);
 
   // Сброс флагов при смене projectId
   useEffect(() => {
-    centeringCancelRef.current = false;
-    hasCentered.current = false;
     userInteracted.current = false;
+    hasCentered.current = false;
     transparentGroupRefs.current = [];
   }, [projectId]);
 
@@ -750,7 +730,6 @@ const Viewer3DScene: React.FC<{
 
     const onWheel = () => {
       userInteracted.current = true;
-      centeringCancelRef.current = true;
     };
 
     viewport.addEventListener('wheel', onWheel, { passive: true });
@@ -759,7 +738,7 @@ const Viewer3DScene: React.FC<{
     };
   }, []);
 
-  // ========== ОСТАЛЬНЫЕ ЭФФЕКТЫ ==========
+  // ========== ОСТАЛЬНЫЕ ЭФФЕКТЫ (без изменений) ==========
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) return;
@@ -972,14 +951,12 @@ const Viewer3DScene: React.FC<{
 
   const handleWheel = useCallback(() => {
     userInteracted.current = true;
-    centeringCancelRef.current = true;
   }, []);
 
   const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isInteractiveUiTarget(event.target)) return;
 
     userInteracted.current = true;
-    centeringCancelRef.current = true;
 
     if (event.pointerType === 'touch') {
       activeTouchPointersRef.current.add(event.pointerId);
@@ -1111,7 +1088,6 @@ const Viewer3DScene: React.FC<{
           <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
           <CameraTracker cameraRef={cameraRef} />
 
-          {/* ArcballControls с исправленными настройками */}
           <ArcballControls
             ref={controlsRef}
             makeDefault
