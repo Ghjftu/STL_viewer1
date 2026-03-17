@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
-import { OrthographicCamera, OrbitControls } from '@react-three/drei';
+import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 
@@ -31,7 +31,7 @@ interface SketchItem {
   id: string | number;
   folderNumber: number;
   createdAt: string;
-  is_read?: boolean;
+  is_read?: boolean;                   // <-- добавили поле
   cameraState?: {
     position?: Vector3Tuple;
     rotation?: Vector3Tuple;
@@ -162,41 +162,23 @@ const TransparencySorter: React.FC<{
   return null;
 };
 
-// ========== Компонент для синхронизации SVG с камерой ==========
-interface SVGSyncProps {
-  svgContainerRef: React.RefObject<HTMLDivElement | null>; // исправлен тип
-  initialCameraState: SketchItem['cameraState'];
-}
-
-const SVGSync: React.FC<SVGSyncProps> = ({ svgContainerRef, initialCameraState }) => {
+const FixedCamera: React.FC<{ cameraState?: SketchItem['cameraState'] }> = ({ cameraState }) => {
   const { camera } = useThree();
-  const initialPos = useRef<THREE.Vector3 | null>(null);
-  const initialZoom = useRef<number | null>(null);
-
-  // Сохраняем начальное состояние камеры при монтировании или изменении initialCameraState
   useEffect(() => {
-    if (camera instanceof THREE.OrthographicCamera && initialCameraState) {
-      initialPos.current = camera.position.clone();
-      initialZoom.current = camera.zoom;
+    if (!cameraState) return;
+    if (camera instanceof THREE.OrthographicCamera) {
+      if (Array.isArray(cameraState.position)) {
+        camera.position.set(cameraState.position[0], cameraState.position[1], cameraState.position[2]);
+      }
+      if (Array.isArray(cameraState.rotation)) {
+        camera.rotation.set(cameraState.rotation[0], cameraState.rotation[1], cameraState.rotation[2]);
+      }
+      if (cameraState.zoom) {
+        camera.zoom = cameraState.zoom;
+      }
+      camera.updateProjectionMatrix();
     }
-  }, [camera, initialCameraState]);
-
-  useFrame(() => {
-    if (!svgContainerRef.current || !(camera instanceof THREE.OrthographicCamera) || !initialPos.current || initialZoom.current === null) return;
-
-    // Вычисляем смещение относительно начальной позиции
-    const deltaX = camera.position.x - initialPos.current.x;
-    const deltaY = camera.position.y - initialPos.current.y;
-    const zoomRatio = camera.zoom / initialZoom.current;
-
-    // Масштабируем смещение в соответствии с текущим зумом (пиксели = мировые * zoom)
-    const translateX = -deltaX * camera.zoom;  // знак минус, чтобы SVG двигался в ту же сторону, что и модель
-    const translateY = deltaY * camera.zoom;
-
-    // Применяем transform
-    svgContainerRef.current.style.transform = `translate(${translateX}px, ${translateY}px) scale(${zoomRatio})`;
-  });
-
+  }, [camera, cameraState]);
   return null;
 };
 
@@ -210,20 +192,53 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   const [svgContent, setSvgContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Состояние и рефы для панорамирования/масштабирования
+  const [viewState, setViewState] = useState({ scale: 1, x: 0, y: 0 });
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const scaleChange = e.deltaY > 0 ? 0.95 : 1.05;
+    setViewState(prev => ({
+      ...prev,
+      scale: Math.max(0.2, Math.min(prev.scale * scaleChange, 5))
+    }));
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();  
+    e.currentTarget.setPointerCapture(e.pointerId);
+    isDragging.current = true;
+    dragStart.current = { x: e.clientX - viewState.x, y: e.clientY - viewState.y };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+     e.preventDefault();  
+    if (!isDragging.current) return;
+    setViewState(prev => ({
+      ...prev,
+      x: e.clientX - dragStart.current.x,
+      y: e.clientY - dragStart.current.y
+    }));
+  };
+
+  const handlePointerUp = () => {
+    isDragging.current = false;
+  };
+
   const canvasContainerRef = useRef<HTMLDivElement>(null);
-  const svgContainerRef = useRef<HTMLDivElement>(null);
   const transparentGroupRefs = useRef<(THREE.Group | null)[]>([]);
-  const cameraControlsRef = useRef<any>(null);
 
   // --- Функция отправки статуса "прочитано" на сервер ---
   const markAsRead = async (sketchId: string | number) => {
     try {
       await fetch(`${import.meta.env.VITE_API_URL}/projects/sketches/${sketchId}/read`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
     } catch (err) {
-      console.error('Не удалось отметить как прочитанное', err);
+      console.error("Не удалось отметить как прочитанное", err);
     }
   };
 
@@ -245,6 +260,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
         setProjectModels(projectData.stlFiles || []);
         setProjectSceneState(parseSceneState(projectData?.project?.scene_state));
 
+        // Приводим sketches к нужному формату, добавляем is_read (по умолчанию false)
         const sketchesArray = (Array.isArray(sketchesData) ? sketchesData : []).map((s: any) => ({
           ...s,
           is_read: s.is_read || false,
@@ -287,16 +303,22 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       .catch(console.error);
   };
 
+  // --- Новый обработчик выбора скетча ---
   const handleSketchSelect = (sketch: SketchItem) => {
-    const index = sketches.findIndex((s) => s.id === sketch.id);
+    // Находим индекс для установки currentSketchIndex
+    const index = sketches.findIndex(s => s.id === sketch.id);
     if (index !== -1) {
       setCurrentSketchIndex(index);
     }
+    // Загружаем SVG
     loadSketchSvg(sketch.folderNumber);
 
+    // Если скетч ещё не прочитан, отмечаем на сервере и локально
     if (!sketch.is_read) {
       markAsRead(sketch.id);
-      setSketches((prev) => prev.map((s) => (s.id === sketch.id ? { ...s, is_read: true } : s)));
+      setSketches(prev => prev.map(s =>
+        s.id === sketch.id ? { ...s, is_read: true } : s
+      ));
     }
   };
 
@@ -324,7 +346,6 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     transparentGroupRefs.current = new Array(stlModels.length).fill(null);
   }, [stlModels]);
 
-  
   // Скачивание
   const downloadSvg = async (folderNumber: number) => {
     const token = localStorage.getItem('token');
@@ -379,10 +400,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     );
   }
 
-  const anchorWidth =
-    currentSketch.cameraState?.viewportWidth || canvasContainerRef.current?.clientWidth || 800;
-  const anchorHeight =
-    currentSketch.cameraState?.viewportHeight || canvasContainerRef.current?.clientHeight || 600;
+  const anchorWidth = currentSketch.cameraState?.viewportWidth || canvasContainerRef.current?.clientWidth || 800;
+  const anchorHeight = currentSketch.cameraState?.viewportHeight || canvasContainerRef.current?.clientHeight || 600;
 
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
@@ -404,6 +423,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                 <div className="text-xs opacity-75">
                   {new Date(sketch.createdAt).toLocaleString()}
                 </div>
+                {/* Бейдж NEW для непрочитанных */}
                 {!sketch.is_read && (
                   <div className="absolute -top-1 -right-1 z-20">
                     <span className="flex h-3 w-3">
@@ -441,72 +461,56 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       </div>
 
       {/* Центральная область: 3D + SVG */}
-      <div ref={canvasContainerRef} className="flex-1 relative overflow-hidden bg-black">
-        <Canvas
-          className="absolute inset-0 w-full h-full"
-          gl={{ antialias: true, alpha: false }}
-          onCreated={({ gl }) => gl.setClearColor('#000000')}
+     <div
+  ref={canvasContainerRef}
+  className="flex-1 relative overflow-hidden bg-black touch-none select-none"
+  onWheel={handleWheel}
+  onPointerDown={handlePointerDown}
+  onPointerMove={handlePointerMove}
+  onPointerUp={handlePointerUp}
+  onPointerLeave={handlePointerUp}
+>
+        <div
+          className="absolute inset-0 origin-center"
+          style={{
+            transform: `translate(${viewState.x}px, ${viewState.y}px) scale(${viewState.scale})`
+          }}
         >
-          <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
-          {/* Контроллер камеры */}
-          <OrbitControls
-            ref={cameraControlsRef}
-            enableRotate={false}
-            enablePan={true}
-            enableZoom={true}
-            zoomSpeed={1.2}
-            panSpeed={0.8}
-            mouseButtons={{
-              LEFT: THREE.MOUSE.PAN,
-              MIDDLE: THREE.MOUSE.DOLLY,
-              RIGHT: THREE.MOUSE.ROTATE,
-            }}
-          />
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[50, 50, 50]} intensity={1.5} />
-          <directionalLight position={[-50, -50, -50]} intensity={0.5} />
-          {stlModels.map((model, index) => (
-            <STLMesh
-              key={model.id}
-              model={model}
-              index={index}
-              transparentGroupRefs={transparentGroupRefs}
-            />
-          ))}
-          <TransparencySorter transparentGroupRefs={transparentGroupRefs} />
-
-          {/* Синхронизация SVG с камерой */}
-          {svgContent && (
-            <SVGSync
-              svgContainerRef={svgContainerRef}
-              initialCameraState={currentSketch.cameraState}
-            />
-          )}
-        </Canvas>
-
-        {/* SVG оверлей (позиционируется абсолютно, трансформируется через SVGSync) */}
-        {svgContent && (
-          <div
-            ref={svgContainerRef}
-            className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible"
-            style={{
-              transformOrigin: 'center center',
-              willChange: 'transform',
-            }}
+          <Canvas
+            className="absolute inset-0 w-full h-full"
+            gl={{ antialias: true, alpha: false }}
+            onCreated={({ gl }) => gl.setClearColor('#000000')}
           >
-            <div
-              style={{
-                width: anchorWidth,
-                height: anchorHeight,
-                position: 'relative',
-                flexShrink: 0,
-              }}
-              dangerouslySetInnerHTML={{ __html: svgContent }}
-            />
-          </div>
-        )}
+            <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
+            <FixedCamera cameraState={currentSketch.cameraState} />
+            <ambientLight intensity={0.6} />
+            <directionalLight position={[50, 50, 50]} intensity={1.5} />
+            <directionalLight position={[-50, -50, -50]} intensity={0.5} />
+            {stlModels.map((model, index) => (
+              <STLMesh
+                key={model.id}
+                model={model}
+                index={index}
+                transparentGroupRefs={transparentGroupRefs}
+              />
+            ))}
+            <TransparencySorter transparentGroupRefs={transparentGroupRefs} />
+          </Canvas>
 
-        
+          {svgContent && (
+            <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible">
+              <div
+                style={{
+                  width: anchorWidth,
+                  height: anchorHeight,
+                  position: 'relative',
+                  flexShrink: 0,
+                }}
+                dangerouslySetInnerHTML={{ __html: svgContent }}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Правая панель: комментарии врача */}
