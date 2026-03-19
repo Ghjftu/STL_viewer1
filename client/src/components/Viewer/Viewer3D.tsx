@@ -1,7 +1,7 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams, type NavigateFunction } from 'react-router-dom';
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
-import { OrthographicCamera, ArcballControls } from '@react-three/drei';
+import { OrthographicCamera, ArcballControls, useProgress } from '@react-three/drei';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { SketchViewer } from './SketchViewer';
@@ -25,13 +25,13 @@ interface SceneStateItem {
   opacity: number;
   position: Vector3Tuple;
   rotation: Vector3Tuple;
-  group?: string; // добавлено поле group (опционально для состояния)
+  group?: string;
 }
 
 interface STLModel extends SceneStateItem {
   name: string;
   url: string;
-  group: string; // обязательно для моделей
+  group: string;
 }
 
 interface ProjectData {
@@ -79,9 +79,9 @@ const buildDefaultModel = (file: Partial<STLModel>): STLModel => ({
   visible: file.visible ?? true,
   opacity: clampOpacity(Number(file.opacity ?? 1)),
   color: typeof file.color === 'string' ? file.color : DEFAULT_MODEL_COLOR,
- position: [...DEFAULT_POSITION], // Жестко сбрасываем позицию в 0,0,0
-  rotation: [...DEFAULT_ROTATION], // Жестко сбрасываем поворот
-  group: file.group || 'Без группы', // добавлено поле group с дефолтным значением
+  position: [...DEFAULT_POSITION],
+  rotation: [...DEFAULT_ROTATION],
+  group: file.group || 'Без группы',
 });
 
 const serializeSceneState = (models: STLModel[]): SceneStateItem[] =>
@@ -92,7 +92,6 @@ const serializeSceneState = (models: STLModel[]): SceneStateItem[] =>
     opacity: clampOpacity(model.opacity),
     position: model.position,
     rotation: model.rotation,
-    // group не сохраняем, так как это статическое свойство модели
   }));
 
 const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: SceneStateItem[]): STLModel[] =>
@@ -392,6 +391,10 @@ const Viewer3DScene: React.FC<{
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [cameraParams, setCameraParams] = useState<CameraParams | null>(null);
 
+  // Прогресс загрузки моделей
+  const { progress, active } = useProgress();
+  const modelsLoading = active || progress < 100;
+
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const controlsRef = useRef<any>(null);
@@ -410,7 +413,6 @@ const Viewer3DScene: React.FC<{
   // Флаги для центрирования моделей (а не камеры)
   const isCenteringRef = useRef(false);
   const hasCentered = useRef(false);
-  // Флаг для отмены центрирования при взаимодействии пользователя (если нужно)
   const userInteracted = useRef(false);
 
   const tools = useMemo(
@@ -439,14 +441,14 @@ const Viewer3DScene: React.FC<{
       if (!token) return;
 
       void fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/scene`, {
-        method: 'POST',
+        method: 'PUT',
         keepalive,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ sceneState: serializeSceneState(models) }),
-      }).catch(() => undefined);
+      }).catch((err) => console.error("Ошибка сохранения:", err));
     },
     [projectId]
   );
@@ -598,7 +600,6 @@ const Viewer3DScene: React.FC<{
 
   // ========== НОВАЯ ЛОГИКА ЦЕНТРИРОВАНИЯ МОДЕЛЕЙ ==========
   const centerModelsAtOrigin = useCallback(async (): Promise<void> => {
-    // Предотвращаем повторный запуск, если уже центрировали или процесс идёт
     if (stlModels.length === 0 || isCenteringRef.current || hasCentered.current || userInteracted.current) return;
 
     isCenteringRef.current = true;
@@ -606,7 +607,6 @@ const Viewer3DScene: React.FC<{
     const loader = new STLLoader();
 
     try {
-      // Загружаем геометрию каждой модели и вычисляем её мировой центр
       const results = await Promise.allSettled(
         stlModels.map(async (model) => {
           if (userInteracted.current) throw new Error('Cancelled');
@@ -620,7 +620,6 @@ const Viewer3DScene: React.FC<{
           geometry.computeBoundingBox();
           if (!geometry.boundingBox) return null;
 
-          // Матрица трансформации модели (позиция + поворот)
           const position = new THREE.Vector3(...model.position);
           const rotation = new THREE.Euler(
             THREE.MathUtils.degToRad(model.rotation[0]),
@@ -634,7 +633,6 @@ const Viewer3DScene: React.FC<{
             new THREE.Vector3(1, 1, 1)
           );
 
-          // Центр bounding box модели в локальных координатах, затем в мировые
           const localCenter = geometry.boundingBox.getCenter(new THREE.Vector3());
           const worldCenter = localCenter.applyMatrix4(matrix);
 
@@ -644,7 +642,6 @@ const Viewer3DScene: React.FC<{
 
       if (userInteracted.current) return;
 
-      // Собираем успешные центры
       const centers = results
         .filter((result): result is PromiseFulfilledResult<THREE.Vector3> => 
           result.status === 'fulfilled' && result.value !== null
@@ -653,10 +650,8 @@ const Viewer3DScene: React.FC<{
 
       if (centers.length === 0) return;
 
-      // Вычисляем среднюю точку
       const avg = centers.reduce((sum, v) => sum.add(v), new THREE.Vector3()).divideScalar(centers.length);
 
-      // Сдвигаем все модели так, чтобы средняя точка оказалась в (0,0,0)
       const updatedModels = stlModels.map((model) => ({
         ...model,
         position: [
@@ -666,15 +661,12 @@ const Viewer3DScene: React.FC<{
         ] as Vector3Tuple,
       }));
 
-      // Обновляем состояние
       setStlModels(updatedModels);
       persistSceneStateLocally(updatedModels);
       scheduleSceneStateSync(updatedModels);
 
-      // Устанавливаем флаг, что центрирование выполнено
       hasCentered.current = true;
 
-      // Сбрасываем камеру: направляем на ноль и возвращаем в исходное положение
       if (cameraRef.current && controlsRef.current) {
         cameraRef.current.position.set(0, 0, 150);
         cameraRef.current.zoom = 2;
@@ -693,7 +685,6 @@ const Viewer3DScene: React.FC<{
     }
   }, [stlModels, persistSceneStateLocally, scheduleSceneStateSync]);
 
-  // Эффект для запуска центрирования после загрузки моделей
   useEffect(() => {
     if (stlModels.length === 0) return;
 
@@ -714,20 +705,17 @@ const Viewer3DScene: React.FC<{
 
     tryCenter();
 
-    // Отменяем центрирование при размонтировании
     return () => {
-      userInteracted.current = true; // Отменяем загрузки, если они ещё идут
+      userInteracted.current = true;
     };
   }, [stlModels, centerModelsAtOrigin]);
 
-  // Сброс флагов при смене projectId
   useEffect(() => {
     userInteracted.current = false;
     hasCentered.current = false;
     transparentGroupRefs.current = [];
   }, [projectId]);
 
-  // Прямой обработчик wheel для гарантированного перехвата жестов на тачпаде
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -782,8 +770,9 @@ const Viewer3DScene: React.FC<{
         setProject(data.project);
 
         const serverSceneState = parseSceneState(data.project.scene_state);
-        const localSceneState = parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
-        const sceneState = localSceneState.length > 0 ? localSceneState : serverSceneState;
+const localSceneState = parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
+// Используем серверные данные, если они есть. Иначе берем локальные.
+const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneState;
         const mergedModels = mergeModelsWithState(data.stlFiles ?? [], sceneState);
 
         latestModelsRef.current = mergedModels;
@@ -876,9 +865,8 @@ const Viewer3DScene: React.FC<{
 
   const toggleGroupVisibility = (groupName: string) => {
     setStlModels((previousModels) => {
-      // Определяем, есть ли в группе хотя бы одна видимая модель
       const anyVisible = previousModels.some((m) => m.group === groupName && m.visible);
-      const newVisibility = !anyVisible; // если есть видимые, то выключаем все; если нет, включаем
+      const newVisibility = !anyVisible;
 
       const updatedModels = previousModels.map((model) =>
         model.group === groupName ? { ...model, visible: newVisibility } : model
@@ -1111,6 +1099,22 @@ const Viewer3DScene: React.FC<{
         onPointerCancelCapture={handlePointerCancelCapture}
         onWheel={handleWheel}
       >
+        {/* Полоса загрузки моделей */}
+        {modelsLoading && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
+            <div className="w-64 rounded-lg bg-gray-800 p-6 text-center shadow-xl">
+              <div className="mb-4 text-lg font-semibold text-white">Загрузка моделей...</div>
+              <div className="h-2 w-full rounded-full bg-gray-700">
+                <div
+                  className="h-2 rounded-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <div className="mt-2 text-sm text-gray-300">{Math.round(progress)}%</div>
+            </div>
+          </div>
+        )}
+
         <Canvas
           className="h-full w-full"
           gl={{ antialias: true, alpha: false }}
@@ -1180,12 +1184,10 @@ const Viewer3DScene: React.FC<{
                   return acc;
                 }, {} as Record<string, STLModel[]>)
               ).map(([groupName, groupModels]) => {
-                // Проверяем, есть ли в группе хотя бы одна видимая модель
                 const isAnyVisible = groupModels.some((m) => m.visible);
 
                 return (
                   <div key={groupName} className="mb-4">
-                    {/* Заголовок группы с кнопкой глаза */}
                     <div className="flex justify-between items-center mb-2 bg-gray-700 p-2 rounded">
                       <h4 className="font-bold text-indigo-300">{groupName}</h4>
                       <button
@@ -1197,7 +1199,6 @@ const Viewer3DScene: React.FC<{
                       </button>
                     </div>
 
-                    {/* Модели внутри группы */}
                     <div className="space-y-4 pl-2 border-l-2 border-gray-600">
                       {groupModels.map((model) => (
                         <div key={model.id} className="rounded-lg bg-gray-700 p-3">
@@ -1205,7 +1206,6 @@ const Viewer3DScene: React.FC<{
                             <div className="truncate text-sm font-semibold text-white" title={model.name}>
                               {model.name}
                             </div>
-                            {/* Глаз для отдельной модели */}
                             <button
                               onClick={() => updateModelVisibility(model.id, !model.visible)}
                               className="text-xl"
