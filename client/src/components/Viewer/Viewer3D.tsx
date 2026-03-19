@@ -79,8 +79,8 @@ const buildDefaultModel = (file: Partial<STLModel>): STLModel => ({
   visible: file.visible ?? true,
   opacity: clampOpacity(Number(file.opacity ?? 1)),
   color: typeof file.color === 'string' ? file.color : DEFAULT_MODEL_COLOR,
-  position: Array.isArray(file.position) ? (file.position as Vector3Tuple) : DEFAULT_POSITION,
-  rotation: Array.isArray(file.rotation) ? (file.rotation as Vector3Tuple) : DEFAULT_ROTATION,
+ position: [...DEFAULT_POSITION], // Жестко сбрасываем позицию в 0,0,0
+  rotation: [...DEFAULT_ROTATION], // Жестко сбрасываем поворот
   group: file.group || 'Без группы', // добавлено поле group с дефолтным значением
 });
 

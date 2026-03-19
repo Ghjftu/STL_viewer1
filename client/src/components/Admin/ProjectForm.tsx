@@ -107,7 +107,7 @@ export const ProjectForm: React.FC = () => {
     // Шаг 1: Проверка наличия токена
     if (!token || token === 'null') {
       alert('Сессия не найдена. Пожалуйста, войдите в систему.');
-      window.location.href = '/login'; // замени на свой путь до страницы авторизации
+      window.location.href = '/'; // замени на свой путь до страницы авторизации
       return;
     }
 
@@ -141,7 +141,7 @@ export const ProjectForm: React.FC = () => {
       else if (res.status === 401 || res.status === 403) {
         localStorage.removeItem('token');
         alert("Сессия истекла или недействительна. Перенаправление на логин...");
-        window.location.href = '/login'; 
+        window.location.href = '/'; 
       } else {
         const errData = await res.json();
         alert(`Ошибка сервера: ${errData.error || errData.message || 'Неизвестная ошибка'}`);

@@ -50,7 +50,7 @@ export const AdminDashboard: React.FC = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('role');
     alert('Сессия истекла. Пожалуйста, войдите снова.');
-    window.location.href = '/login';
+    window.location.href = '/';
   };
 
   // Получение заголовков авторизации
@@ -70,7 +70,7 @@ export const AdminDashboard: React.FC = () => {
 
     if (!token || role !== 'admin') {
       alert('Доступ запрещен!');
-      window.location.href = '/login';
+      window.location.href = '/';
       return;
     }
     setIsAuthorized(true);
@@ -305,7 +305,7 @@ export const AdminDashboard: React.FC = () => {
           <button
             onClick={() => {
               localStorage.clear();
-              window.location.href = '/login';
+              window.location.href = '/';
             }}
             className="bg-gray-600 hover:bg-gray-700 px-4 py-1 rounded text-sm transition"
           >

@@ -54,13 +54,12 @@ const buildDefaultModel = (model: Partial<STLModel>): STLModel => ({
   id: model.id ?? '',
   name: model.name,
   url: model.url ?? '',
-  visible: model.visible ?? true,
-  color: typeof model.color === 'string' ? model.color : DEFAULT_MODEL_COLOR,
-  opacity: clampOpacity(Number(model.opacity ?? 1)),
-  position: Array.isArray(model.position) ? (model.position as Vector3Tuple) : DEFAULT_POSITION,
-  rotation: Array.isArray(model.rotation) ? (model.rotation as Vector3Tuple) : DEFAULT_ROTATION,
+  visible: true, 
+  opacity: 1, 
+  color: DEFAULT_MODEL_COLOR, 
+  position: [...DEFAULT_POSITION], 
+  rotation: [...DEFAULT_ROTATION], 
 });
-
 const parseSceneState = (value: unknown): SceneStateItem[] => {
   if (!value) return [];
   try {
@@ -71,12 +70,16 @@ const parseSceneState = (value: unknown): SceneStateItem[] => {
   }
 };
 
-const mergeModelsWithState = (models: Partial<STLModel>[], sceneState: unknown) => {
+const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: unknown): STLModel[] => {
   const safeState = parseSceneState(sceneState);
-  return models.map((model) => {
-    const defaults = buildDefaultModel(model);
+  
+  return files.map((file) => {
+    const defaults = buildDefaultModel(file);
+    // Приводим ID к строке для 100% точного совпадения
     const saved = safeState.find((item) => String(item.id) === String(defaults.id));
+    
     if (!saved) return defaults;
+    
     return {
       ...defaults,
       ...saved,
