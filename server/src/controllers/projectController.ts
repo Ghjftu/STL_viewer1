@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
-import { createProjectPath } from '../utils/fileSystem';
+import { randomUUID } from 'crypto';
+import { createProjectPath, getSafeFileName, STORAGE_DIR } from '../utils/fileSystem';
 import fs from 'fs';
 import path from 'path';
 
@@ -10,12 +11,50 @@ const getParamAsString = (param: string | string[] | undefined): string => {
   return param || '';
 };
 
+const getUploadedFiles = (files: Request['files']): Express.Multer.File[] => {
+  return Array.isArray(files) ? files : [];
+};
+
+const getStorageRelativePath = (projectPath: string): string => {
+  const relativePath = path.relative(STORAGE_DIR, projectPath);
+  return relativePath.startsWith('..') || path.isAbsolute(relativePath)
+    ? ''
+    : path.posix.join('storage', ...relativePath.split(path.sep));
+};
+
+const parseFileGroups = (rawValue: unknown): Record<string, string> => {
+  if (typeof rawValue !== 'string') return {};
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const parseBooleanFormValue = (value: unknown): boolean => {
+  return value === true || value === 'true' || value === '1' || value === 'on';
+};
+
+const normalizeOptionalUuid = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'undefined' || trimmed === 'null') return null;
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
+    ? trimmed
+    : null;
+};
+
 // 1. Обновленный метод UPDATE (теперь принимает и файлы)
 export const updateProject = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
-    const { doctor_id, doctor_name, patient_name } = req.body;
-    const files = req.files as Express.Multer.File[];
+    const { doctor_id, doctor_name, patient_name, is_public } = req.body;
+    const files = getUploadedFiles(req.files);
+    const normalizedDoctorId = normalizeOptionalUuid(doctor_id);
+    const isPublic = parseBooleanFormValue(is_public);
 
     const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
     if (projectRes.rows.length === 0) return res.status(404).json({ message: "Проект не найден" });
@@ -23,17 +62,19 @@ export const updateProject = async (req: Request, res: Response) => {
 
     await pool.query(
       `UPDATE projects 
-       SET doctor_id = $1, doctor_display_name = $2, patient_name = $3
-       WHERE id = $4`,
-      [doctor_id, doctor_name, patient_name, id]
+       SET doctor_id = $1, doctor_display_name = $2, patient_name = $3, is_public = $4
+       WHERE id = $5`,
+      [normalizedDoctorId, doctor_name || null, patient_name || null, isPublic, id]
     );
 
-    if (files && files.length > 0) {
+    if (files.length > 0) {
       const stlFolder = path.join(projectPath, 'stl');
       if (!fs.existsSync(stlFolder)) fs.mkdirSync(stlFolder, { recursive: true });
       
       files.forEach(file => {
-        const targetPath = path.join(stlFolder, file.originalname);
+        const safeFileName = getSafeFileName(file.originalname);
+        if (!safeFileName) return;
+        const targetPath = path.join(stlFolder, safeFileName);
         fs.copyFileSync(file.path, targetPath);
         fs.unlinkSync(file.path);
       });
@@ -55,7 +96,12 @@ export const deleteFile = async (req: Request, res: Response) => {
     const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
     if (projectRes.rows.length === 0) return res.status(404).json({ message: "Проект не найден" });
     
-    const filePath = path.join(projectRes.rows[0].file_path_root, 'stl', fileName);
+    const safeFileName = getSafeFileName(fileName);
+    if (!safeFileName || safeFileName !== fileName) {
+      return res.status(400).json({ message: "Некорректное имя файла" });
+    }
+
+    const filePath = path.join(projectRes.rows[0].file_path_root, 'stl', safeFileName);
 
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
@@ -70,8 +116,8 @@ export const deleteFile = async (req: Request, res: Response) => {
 
 export const createProject = async (req: Request, res: Response) => {
   try {
-    const { country, city, clinic, department, doctor_id, doctor_name, patient_name } = req.body;
-    const files = req.files as Express.Multer.File[];
+    const { country, city, clinic, department, doctor_id, doctor_name, patient_name, open_scene, is_public } = req.body;
+    const files = getUploadedFiles(req.files);
 
     console.log("🔍 [CREATING PROJECT] Data received:", req.body);
 
@@ -82,20 +128,24 @@ export const createProject = async (req: Request, res: Response) => {
     const sDocName = doctor_name || 'Unknown_Doctor';
     const sPatient = patient_name || 'Unknown_Patient';
 
-    const projectPath = createProjectPath(sCountry, sCity, sClinic, sDept, sDocName, sPatient);
+    const isPublic = parseBooleanFormValue(open_scene) || parseBooleanFormValue(is_public);
 
-    const result = await pool.query(
-      `INSERT INTO projects (doctor_id, patient_name, doctor_display_name, file_path_root) 
-      VALUES ($1, $2, $3, $4) RETURNING id`,
-      [doctor_id, sPatient, sDocName, projectPath] 
+    const projectId = randomUUID();
+    const projectPath = createProjectPath(sCountry, sCity, sClinic, sDept, sDocName, sPatient, projectId);
+
+    await pool.query(
+      `INSERT INTO projects (id, doctor_id, patient_name, doctor_display_name, file_path_root, is_public) 
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [projectId, doctor_id, sPatient, sDocName, projectPath, isPublic] 
     );
-    const projectId = result.rows[0].id;
 
-    if (files && files.length > 0) {
+    if (files.length > 0) {
       const stlFolder = path.join(projectPath, 'stl');
       
       files.forEach(file => {
-        const targetPath = path.join(stlFolder, file.originalname);
+        const safeFileName = getSafeFileName(file.originalname);
+        if (!safeFileName) return;
+        const targetPath = path.join(stlFolder, safeFileName);
         fs.copyFileSync(file.path, targetPath); 
         fs.unlinkSync(file.path); 
       });
@@ -103,29 +153,21 @@ export const createProject = async (req: Request, res: Response) => {
     }
 
 
-    // Читаем группы из формы
-const fileGroups = JSON.parse(req.body.file_groups || '{}');
+    const fileGroups = parseFileGroups(req.body.file_groups);
+    const initialSceneState = files.map((file, index) => ({
+      id: `stl-${index}`,
+      group: fileGroups[file.originalname] || 'Ткани',
+      visible: true,
+      color: '#cccccc',
+      opacity: 1,
+      position: [0, 0, 0],
+      rotation: [0, 0, 0]
+    }));
 
-// Формируем начальное состояние сцены
-const initialSceneState = files.map((file, index) => {
-  // Находим транслитерированное имя файла, так как ключи в словаре могут быть оригинальными
-  // Либо просто используем индекс, так как порядок совпадает
-  return {
-    id: `stl-${index}`,
-    group: fileGroups[file.originalname] || 'Ткани',
-    visible: true,
-    color: '#cccccc',
-    opacity: 1,
-    position: [0, 0, 0],
-    rotation: [0, 0, 0]
-  };
-});
-
-// Сохраняем это в базу
-await pool.query(
-  "UPDATE projects SET scene_state = $1 WHERE id = $2",
-  [JSON.stringify(initialSceneState), projectId]
-);
+    await pool.query(
+      "UPDATE projects SET scene_state = $1 WHERE id = $2",
+      [JSON.stringify(initialSceneState), projectId]
+    );
 
     res.status(201).json({ 
       message: "Проект успешно создан", 
@@ -146,31 +188,26 @@ await pool.query(
 export const getProjects = async (req: Request, res: Response) => {
   try {
     const { userId, role } = req.query;
-    // Внутри запроса на список проектов
-const query = `
+    const authUser = (req as any).user;
+    const effectiveRole = authUser?.role || role;
+    const effectiveUserId = authUser?.userId || userId;
+
+    let query = `
   SELECT 
     p.*, 
     u.full_name as doctor_display_name,
     (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
   FROM projects p
   LEFT JOIN users u ON p.doctor_id = u.id
-  ORDER BY p.created_at DESC
 `;
     let params: any[] = [];
 
-    if (role === 'doctor' && userId) {
-      // Внутри запроса на список проектов
-const query = `
-  SELECT 
-    p.*, 
-    u.full_name as doctor_display_name,
-    (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
-  FROM projects p
-  LEFT JOIN users u ON p.doctor_id = u.id
-  ORDER BY p.created_at DESC
-`;
-      params = [userId];
+    if (effectiveRole === 'doctor' && effectiveUserId) {
+      query += ` WHERE p.doctor_id = $1`;
+      params = [effectiveUserId];
     }
+
+    query += ` ORDER BY p.created_at DESC`;
 
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -201,11 +238,15 @@ export const getProjectById = async (req: Request, res: Response) => {
     // server/src/controllers/projectController.ts
 
 const project = result.rows[0];
+const authUser = (req as any).user;
+
+if (!project.is_public && !authUser) {
+  return res.status(401).json({ message: "Для просмотра проекта требуется вход" });
+}
+
 const stlFolder = path.join(project.file_path_root, 'stl');
 
-// Находим, где начинается /storage/ в полном пути
-const storageIndex = project.file_path_root.indexOf('storage/'); 
-const relativePath = storageIndex !== -1 ? project.file_path_root.substring(storageIndex) : '';
+const relativePath = getStorageRelativePath(project.file_path_root);
 
 let stlFiles: any[] = [];
 if (fs.existsSync(stlFolder)) {
@@ -214,7 +255,7 @@ if (fs.existsSync(stlFolder)) {
     id: `stl-${index}`,
     name: file,
     // УБИРАЕМ baseUrl. Путь должен начинаться со слеша /
-    url: `/${relativePath}/stl/${file}`, 
+    url: `/${relativePath}/stl/${encodeURIComponent(file)}`, 
     position: [0, 0, 0],
     rotation: [0, 0, 0],
     color: '#cccccc',
@@ -252,7 +293,7 @@ export const saveProjectScene = async (req: Request, res: Response) => {
 export const saveSketch = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
-    const { cameraState, canvasData, svgContent, textNotes, modelsState } = req.body; // <--- Добавили modelsState
+    const { cameraState, canvasData, svgContent, textNotes, audioNotes, modelsState } = req.body; // <--- Добавили modelsState
 
     const projectRes = await pool.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
     if (projectRes.rows.length === 0) {
@@ -282,7 +323,7 @@ export const saveSketch = async (req: Request, res: Response) => {
 
     fs.writeFileSync(
       path.join(newSketchDirPath, jsonFileName), 
-      JSON.stringify({ cameraState, canvasData, textNotes }, null, 2)
+      JSON.stringify({ cameraState, canvasData, textNotes, audioNotes, modelsState }, null, 2)
     );
     
     if (svgContent) {
@@ -291,13 +332,14 @@ export const saveSketch = async (req: Request, res: Response) => {
     console.log(`✅ Эскиз сохранен в папку: ${newSketchDirPath}`);
 
     const sketchRes = await pool.query(
-  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, folder_number, models_state) 
-   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
   [
     id, 
     JSON.stringify(cameraState), 
     JSON.stringify(canvasData), 
     JSON.stringify(textNotes || []), 
+    JSON.stringify(audioNotes || []),
     nextFolderNumber,
     JSON.stringify(modelsState || []) // <--- Сохраняем в БД
   ]
@@ -326,7 +368,7 @@ export const getProjectSketches = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
     const result = await pool.query(
-  `SELECT id, folder_number, camera_state, canvas_data, text_notes, models_state, created_at, is_read
+  `SELECT id, folder_number, camera_state, canvas_data, text_notes, audio_notes, models_state, created_at, is_read
   FROM sketches 
   WHERE project_id = $1 
   ORDER BY folder_number ASC`,
@@ -337,7 +379,9 @@ const sketches = result.rows.map(row => ({
   id: row.id,
   folderNumber: row.folder_number,
   cameraState: row.camera_state,
+  canvasData: row.canvas_data,
   textNotes: row.text_notes,
+  audioNotes: row.audio_notes || [],
   modelsState: row.models_state, // <--- Передаем во фронтенд!
   createdAt: row.created_at,
   is_read: row.is_read,
@@ -446,17 +490,19 @@ export const importSketches = async (req: Request, res: Response) => {
         const cameraState = parsedData.cameraState || null;
 const canvasData = parsedData.canvasData || null; // <--- Здесь только canvasData
 const textNotes = parsedData.textNotes || [];
+const audioNotes = parsedData.audioNotes || [];
 const modelsState = parsedData.modelsState || []; // <--- Вытаскиваем modelsState
 
 // Пишем в БД эскиз
 const sketchRes = await pool.query(
-  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, folder_number, models_state) 
-   VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+  `INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
   [
     id, 
     JSON.stringify(cameraState), 
     JSON.stringify(canvasData), 
     JSON.stringify(textNotes), 
+    JSON.stringify(audioNotes),
     nextFolderNumber,
     JSON.stringify(modelsState) // <--- Сохраняем настройки прозрачности и цвета
   ]

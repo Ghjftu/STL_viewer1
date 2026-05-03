@@ -6,6 +6,7 @@ export const AdminDashboard: React.FC = () => {
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [isEditModalOpen, setEditModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<any>(null);
+  const [toastMessage, setToastMessage] = useState('');
 
   // States for file management (STL)
   const [existingFiles, setExistingFiles] = useState<any[]>([]);
@@ -85,6 +86,13 @@ export const AdminDashboard: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', handleFocus);
   }, []);
 
+  useEffect(() => {
+    if (!toastMessage) return;
+
+    const timeoutId = window.setTimeout(() => setToastMessage(''), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [toastMessage]);
+
   const fetchProjects = () => {
     fetch(`${import.meta.env.VITE_API_URL}/projects/list`, {
       headers: getAuthHeaders(),
@@ -137,13 +145,30 @@ export const AdminDashboard: React.FC = () => {
       .catch(() => console.error('Ошибка загрузки деталей проекта'));
   };
 
-  const copyLink = (projectId: string) => {
-    const viewerLink = `${window.location.origin}/viewer/${projectId}`;
+  // Функция для получения названия клиники по проекту
+  const getClinicName = (project: any): string => {
+    const doctor = doctors.find((d) => String(d.id) === String(project.doctor_id));
+    return doctor?.clinic || 'Не указана';
+  };
+
+  const getProjectSlug = (project: any): string => {
+    const patientName = String(project?.patient_name || 'project');
+    const slug = patientName
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-+|-+$/g, '');
+
+    return encodeURIComponent(slug || 'project');
+  };
+
+  const copyLink = (project: any) => {
+    const viewerLink = `${window.location.origin}/viewer/${getProjectSlug(project)}/${project.id}`;
 
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard
         .writeText(viewerLink)
-        .then(() => alert('Ссылка скопирована!'))
+        .then(() => setToastMessage('Ссылка скопирована!'))
         .catch(() => alert('Ошибка при копировании'));
     } else {
       const textArea = document.createElement('textarea');
@@ -158,7 +183,7 @@ export const AdminDashboard: React.FC = () => {
       try {
         const successful = document.execCommand('copy');
         if (successful) {
-          alert('Ссылка скопирована!');
+          setToastMessage('Ссылка скопирована!');
         } else {
           alert('Не удалось скопировать ссылку');
         }
@@ -207,9 +232,10 @@ export const AdminDashboard: React.FC = () => {
     const doc = doctors.find((d) => String(d.id) === String(editingProject.doctor_id));
 
     const data = new FormData();
-    data.append('doctor_id', editingProject.doctor_id);
-    data.append('doctor_name', doc ? doc.full_name : 'Unknown');
-    data.append('patient_name', editingProject.patient_name);
+    data.append('doctor_id', editingProject.doctor_id ? String(editingProject.doctor_id) : '');
+    data.append('doctor_name', doc ? doc.full_name : editingProject.doctor_display_name || '');
+    data.append('patient_name', editingProject.patient_name || '');
+    data.append('is_public', String(Boolean(editingProject.is_public)));
 
     // Добавляем новые файлы с транслитерированными именами
     if (newFiles) {
@@ -297,9 +323,17 @@ export const AdminDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-100 text-black font-sans relative">
-      <nav className="bg-slate-800 text-white p-4 flex justify-between items-center shadow-md">
-        <h1 className="text-xl font-bold tracking-tight">
-          STL_Viewer <span className="text-blue-400">ADMIN</span>
+      {toastMessage && (
+        <div className="fixed right-4 top-4 z-[60] rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-lg">
+          {toastMessage}
+        </div>
+      )}
+
+      <nav className="flex items-center justify-between gap-3 bg-slate-800 p-3 text-white shadow-md sm:p-4">
+        <h1 className="rounded-lg bg-white px-3 py-2 text-lg font-bold tracking-tight shadow-sm sm:px-4 sm:text-xl">
+          <span style={{ color: '#003550' }}>Mesh</span>
+          <span style={{ color: '#0a6925' }}>Bridge</span>
+          <span style={{ color: '#0a6925' }}> ADMIN</span>
         </h1>
         <div className="flex items-center gap-4">
           <button
@@ -307,20 +341,20 @@ export const AdminDashboard: React.FC = () => {
               localStorage.clear();
               window.location.href = '/';
             }}
-            className="bg-gray-600 hover:bg-gray-700 px-4 py-1 rounded text-sm transition"
+            className="rounded bg-gray-600 px-3 py-2 text-sm transition hover:bg-gray-700 sm:px-4 sm:py-1"
           >
             Выйти
           </button>
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto py-8 px-4">
-        <div className="flex space-x-4 mb-8">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+        <div className="mb-6 grid grid-cols-1 gap-3 sm:mb-8 sm:grid-cols-2 sm:gap-4 md:flex">
           <a
             href="/admin/create-project"
             target="_blank"
             rel="noopener noreferrer"
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700 transition"
+            className="rounded-lg bg-blue-600 px-5 py-3 text-center font-bold text-white shadow-lg transition hover:bg-blue-700 sm:px-6"
           >
             + Добавить проект
           </a>
@@ -328,19 +362,82 @@ export const AdminDashboard: React.FC = () => {
             href="/admin/doctors"
             target="_blank"
             rel="noopener noreferrer"
-            className="bg-emerald-600 text-white px-6 py-3 rounded-lg font-bold shadow-lg hover:bg-emerald-700 transition"
+            className="rounded-lg bg-emerald-600 px-5 py-3 text-center font-bold text-white shadow-lg transition hover:bg-emerald-700 sm:px-6"
           >
-            👥 Управление врачами
+            Управление врачами
           </a>
         </div>
 
-        <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
+        <div className="grid gap-3 md:hidden">
+          {projects.map((p) => (
+            <div key={p.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold uppercase text-gray-400">{new Date(p.created_at).toLocaleDateString()}</div>
+                  <div className="break-words text-lg font-bold text-gray-800">{p.patient_name}</div>
+                </div>
+                {p.unread_sketches_count > 0 && (
+                  <span className="shrink-0 rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
+                    +{p.unread_sketches_count}
+                  </span>
+                )}
+              </div>
+              <div className="mb-4 grid gap-2 text-sm">
+                <div>
+                  <span className="text-gray-400">Врач:</span>{' '}
+                  <span className="font-semibold text-blue-700">{p.doctor_display_name || 'Не указан'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Клиника:</span>{' '}
+                  <span className="font-semibold text-green-700">{getClinicName(p)}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => copyLink(p)}
+                    className="flex-1 rounded bg-indigo-600 px-2 py-2 text-xs font-bold uppercase text-white"
+                  >
+                    Ссылка
+                  </button>
+                  {p.is_public && (
+                    <span
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-sm text-emerald-700"
+                      title="Открытая сцена"
+                    >
+                      🔓
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => window.open(`/viewer/${p.id}?mode=sketches`, '_blank')}
+                  className="rounded bg-orange-500 px-2 py-2 text-xs font-bold uppercase text-white"
+                >
+                  Скетчи
+                </button>
+                <button
+                  onClick={() => {
+                    setEditingProject(p);
+                    fetchProjectDetails(p.id);
+                    setEditModalOpen(true);
+                  }}
+                  className="rounded bg-gray-500 px-2 py-2 text-xs font-bold uppercase text-white"
+                >
+                  Ред.
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg md:block">
           <table className="w-full text-left">
             <thead className="bg-gray-50 border-b">
               <tr>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase">Дата</th>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase">Пациент</th>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase">Врач</th>
+                <th className="p-4 font-bold text-gray-600 text-xs uppercase">Клиника</th>
                 <th className="p-4 font-bold text-gray-600 text-xs uppercase text-center">Управление</th>
               </tr>
             </thead>
@@ -356,23 +453,38 @@ export const AdminDashboard: React.FC = () => {
                       {p.doctor_display_name || 'Не указан'}
                     </span>
                   </td>
+                  <td className="p-4">
+                    <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-black uppercase">
+                      {getClinicName(p)}
+                    </span>
+                  </td>
                   <td className="p-4 flex justify-center gap-2">
-                    <button
-                      onClick={() => copyLink(p.id)}
-                      className="bg-indigo-600 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase"
-                    >
-                      🔗 Ссылка
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => copyLink(p)}
+                        className="bg-indigo-600 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase"
+                      >
+                        Ссылка
+                      </button>
+                      {p.is_public && (
+                        <span
+                          className="flex h-7 w-7 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-sm text-emerald-700"
+                          title="Открытая сцена"
+                        >
+                          🔓
+                        </span>
+                      )}
+                    </div>
                     <button
                       onClick={() => window.open(`/viewer/${p.id}?mode=sketches`, '_blank')}
                       className="bg-orange-500 text-white px-3 py-1.5 rounded text-[10px] font-bold uppercase flex items-center gap-1"
                     >
                       Скетчи
                       {p.unread_sketches_count > 0 && (
-  <span className="ml-2 bg-red-500 text-white rounded-full px-2 py-0.5 text-[10px] font-bold animate-pulse shadow-sm">
-    +{p.unread_sketches_count}
-  </span>
-)}
+                        <span className="ml-2 bg-red-500 text-white rounded-full px-2 py-0.5 text-[10px] font-bold animate-pulse shadow-sm">
+                          +{p.unread_sketches_count}
+                        </span>
+                      )}
                     </button>
                     <button
                       onClick={() => {
@@ -393,8 +505,8 @@ export const AdminDashboard: React.FC = () => {
       </div>
 
       {isEditModalOpen && editingProject && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-2xl w-[32rem] shadow-2xl border border-gray-200 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-gray-200 bg-white p-4 shadow-2xl sm:max-w-[32rem] sm:rounded-2xl sm:p-6">
             <h3 className="text-xl font-bold mb-6 text-gray-800 border-b pb-2">Редактирование проекта</h3>
 
             <div className="mb-4">
@@ -410,6 +522,25 @@ export const AdminDashboard: React.FC = () => {
               />
             </div>
 
+            <label className="mb-6 flex cursor-pointer items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-left">
+              <input
+                type="checkbox"
+                checked={Boolean(editingProject.is_public)}
+                onChange={(e) =>
+                  setEditingProject({ ...editingProject, is_public: e.target.checked })
+                }
+                className="mt-1 h-5 w-5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span>
+                <span className="block text-sm font-bold text-emerald-900">
+                  Сделать проект открытым
+                </span>
+                <span className="block text-xs leading-5 text-emerald-800">
+                  Ссылка на просмотр будет открываться без входа и пароля.
+                </span>
+              </span>
+            </label>
+
             {/* File management section (STL) */}
             <div className="mb-6">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-2">
@@ -422,7 +553,7 @@ export const AdminDashboard: React.FC = () => {
                   {existingFiles.map((file) => (
                     <li
                       key={file.name}
-                      className="flex items-center justify-between bg-gray-50 p-2 rounded"
+                      className="flex items-center justify-between gap-2 rounded bg-gray-50 p-2"
                     >
                       <span className="text-sm truncate">{file.name}</span>
                       <button
@@ -446,7 +577,7 @@ export const AdminDashboard: React.FC = () => {
                 multiple
                 accept=".stl"
                 onChange={(e) => setNewFiles(e.target.files)}
-                className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                className="w-full text-sm text-gray-500 file:mb-2 file:mr-4 file:rounded file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-blue-700 hover:file:bg-blue-100 sm:file:mb-0"
               />
               {newFiles && newFiles.length > 0 && (
                 <div className="mt-2 text-xs text-gray-600">
@@ -465,7 +596,7 @@ export const AdminDashboard: React.FC = () => {
                 multiple
                 accept=".json,.svg"
                 onChange={(e) => setSketchFiles(e.target.files)}
-                className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 mb-3 cursor-pointer"
+                className="mb-3 w-full cursor-pointer text-sm text-gray-500 file:mb-2 file:mr-4 file:rounded file:border-0 file:bg-blue-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-blue-700 sm:file:mb-0"
               />
 
               {sketchFiles && sketchFiles.length > 0 && (
@@ -484,21 +615,21 @@ export const AdminDashboard: React.FC = () => {
               )}
             </div>
 
-            <div className="flex gap-3 justify-end">
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button
                 onClick={() => {
                   setEditModalOpen(false);
                   setNewFiles(null);
-                  setSketchFiles(null); // also clear sketch files
+                  setSketchFiles(null);
                 }}
-                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                className="rounded-lg bg-gray-100 px-4 py-3 text-gray-700 hover:bg-gray-200 sm:py-2"
               >
                 Отмена
               </button>
               <button
                 onClick={handleUpdateProject}
                 disabled={loading}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:bg-blue-300 flex items-center gap-2"
+                className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-bold text-white hover:bg-blue-700 disabled:bg-blue-300 sm:py-2"
               >
                 {loading ? 'Сохранение...' : 'Сохранить изменения STL'}
               </button>

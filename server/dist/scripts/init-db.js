@@ -7,14 +7,14 @@ exports.initDb = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const db_1 = __importDefault(require("../config/db"));
-const bcrypt_1 = __importDefault(require("bcrypt"));
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const initDb = async () => {
     try {
         const sqlPath = path_1.default.join(process.cwd(), 'init.sql'); // Исправленный путь для Docker
         const sql = fs_1.default.readFileSync(sqlPath, 'utf8');
         console.log('⏳ Initializing database...');
         await db_1.default.query(sql);
-        const hashedPassword = await bcrypt_1.default.hash('admin123', 10);
+        const hashedPassword = await bcryptjs_1.default.hash('admin123', 10);
         // ВНИМАНИЕ: Здесь теперь DO UPDATE, чтобы затереть старый текст хешем
         await db_1.default.query(`
       INSERT INTO users (login, password_hash, role, full_name)

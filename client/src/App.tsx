@@ -48,20 +48,8 @@ export default function App() {
         <Route path="/doctor-dashboard" element={<DoctorDashboard />} />
         
         {/* Просмотрщик 3D */}
-        <Route 
-          path="/viewer/:id" 
-          element={
-            localStorage.getItem('token') ? (
-              <Viewer3D />
-            ) : (
-              // Если токена нет, сохраняем ссылку и отправляем на логин
-              (() => {
-                localStorage.setItem('returnUrl', window.location.pathname);
-                return <Navigate to="/" replace />;
-              })()
-            )
-          } 
-        />
+        <Route path="/viewer/:patientSlug/:id" element={<Viewer3D />} />
+        <Route path="/viewer/:id" element={<Viewer3D />} />
 
         {/* 404 - Страница не найдена */}
         <Route path="*" element={<div className="p-10 text-black">404 - Страница не найдена</div>} />

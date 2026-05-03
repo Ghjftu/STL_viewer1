@@ -1,19 +1,38 @@
 import fs from 'fs';
 import path from 'path';
 
+export const STORAGE_DIR = path.join(__dirname, '../../storage');
+
+const sanitizePathSegment = (segment: string, fallback: string): string => {
+  const cleaned = String(segment || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\.\.+/g, '.')
+    .replace(/\s+/g, ' ')
+    .slice(0, 120);
+
+  return cleaned && cleaned !== '.' ? cleaned : fallback;
+};
+
 export const createProjectPath = (
   country: string, 
   city: string, 
   clinic: string, 
   department: string, 
   doctor: string, 
-  patient: string
+  patient: string,
+  projectId: string
 ) => {
-  // Базовая папка storage лежит в корне сервера
-  const basePath = path.join(__dirname, '../../storage');
-  
-  // Создаем путь по ТЗ
-  const targetPath = path.join(basePath, country, city, clinic, department, doctor, patient);
+  const targetPath = path.join(
+    STORAGE_DIR,
+    sanitizePathSegment(country, 'Unknown_Country'),
+    sanitizePathSegment(city, 'Unknown_City'),
+    sanitizePathSegment(clinic, 'Unknown_Clinic'),
+    sanitizePathSegment(department, 'Unknown_Department'),
+    sanitizePathSegment(doctor, 'Unknown_Doctor'),
+    sanitizePathSegment(patient, 'Unknown_Patient'),
+    sanitizePathSegment(projectId, 'Unknown_Project')
+  );
   
   // Создаем подпапки
   const subfolders = ['stl', 'sketches', 'tz'];
@@ -30,4 +49,8 @@ export const createProjectPath = (
   });
 
   return targetPath; // Возвращаем путь, чтобы контроллер мог закинуть туда файлы
+};
+
+export const getSafeFileName = (fileName: string): string => {
+  return path.basename(fileName || '').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
 };

@@ -27,6 +27,22 @@ interface TextNote {
   text: string;
 }
 
+interface AudioNote {
+  id: number;
+  dataUrl: string;
+  mimeType: string;
+  createdAt: string;
+}
+
+type Point = { x: number; y: number };
+
+type CanvasDrawing =
+  | { type: 'ruler'; points: Point[]; value: number }
+  | { type: 'angle'; points: Point[]; value: number }
+  | { type: 'circle'; points: Point[]; value: number }
+  | { type: 'brush'; points: Point[]; color: string }
+  | { type: 'text'; target: Point; labelPos: Point; textId: number; color: string; fontSize: number };
+
 interface SketchItem {
   id: string | number;
   folderNumber: number;
@@ -40,7 +56,9 @@ interface SketchItem {
     viewportHeight?: number;
   };
   modelsState?: SceneStateItem[];
+  canvasData?: CanvasDrawing[];
   textNotes?: TextNote[];
+  audioNotes?: AudioNote[];
 }
 
 // ========== Константы и утилиты ==========
@@ -49,6 +67,32 @@ const DEFAULT_POSITION: Vector3Tuple = [0, 0, 0];
 const DEFAULT_ROTATION: Vector3Tuple = [0, 0, 0];
 
 const clampOpacity = (value: number) => Math.min(1, Math.max(0, value));
+
+const getCircleGeometry = (points: Point[]) => {
+  if (points.length < 3) return null;
+
+  const [point1, point2, point3] = points;
+  const determinant =
+    2 * (point1.x * (point2.y - point3.y) + point2.x * (point3.y - point1.y) + point3.x * (point1.y - point2.y));
+  if (Math.abs(determinant) < 1e-10) return null;
+
+  const point1Squared = point1.x * point1.x + point1.y * point1.y;
+  const point2Squared = point2.x * point2.x + point2.y * point2.y;
+  const point3Squared = point3.x * point3.x + point3.y * point3.y;
+  const centerX =
+    (point1Squared * (point2.y - point3.y) +
+      point2Squared * (point3.y - point1.y) +
+      point3Squared * (point1.y - point2.y)) /
+    determinant;
+  const centerY =
+    (point1Squared * (point3.x - point2.x) +
+      point2Squared * (point1.x - point3.x) +
+      point3Squared * (point2.x - point1.x)) /
+    determinant;
+  const radius = Math.hypot(point1.x - centerX, point1.y - centerY);
+
+  return { centerX, centerY, radius };
+};
 
 const buildDefaultModel = (model: Partial<STLModel>): STLModel => ({
   id: model.id ?? '',
@@ -165,6 +209,35 @@ const TransparencySorter: React.FC<{
   return null;
 };
 
+const ModelNormalizer: React.FC<{
+  modelsGroupRef: React.RefObject<THREE.Group | null>;
+  resetKey: string;
+}> = ({ modelsGroupRef, resetKey }) => {
+  const normalizedKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    normalizedKeyRef.current = null;
+    modelsGroupRef.current?.position.set(0, 0, 0);
+  }, [modelsGroupRef, resetKey]);
+
+  useFrame(() => {
+    if (normalizedKeyRef.current === resetKey || !modelsGroupRef.current) return;
+
+    modelsGroupRef.current.position.set(0, 0, 0);
+    modelsGroupRef.current.updateMatrixWorld(true);
+
+    const box = new THREE.Box3().setFromObject(modelsGroupRef.current);
+    if (box.isEmpty()) return;
+
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    modelsGroupRef.current.position.copy(center.clone().negate());
+    normalizedKeyRef.current = resetKey;
+  });
+
+  return null;
+};
+
 const FixedCamera: React.FC<{ cameraState?: SketchItem['cameraState'] }> = ({ cameraState }) => {
   const { camera } = useThree();
   useEffect(() => {
@@ -194,14 +267,17 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   const [currentSketchIndex, setCurrentSketchIndex] = useState(0);
   const [svgContent, setSvgContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [viewerSize, setViewerSize] = useState({ width: 0, height: 0 });
 
   // Состояние и рефы для панорамирования/масштабирования
   const [viewState, setViewState] = useState({ scale: 1, x: 0, y: 0 });
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
+  const activeTouchPointersRef = useRef<Set<number>>(new Set());
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     const scaleChange = e.deltaY > 0 ? 0.95 : 1.05;
     setViewState(prev => ({
       ...prev,
@@ -210,6 +286,17 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') {
+      activeTouchPointersRef.current.add(e.pointerId);
+
+      if (activeTouchPointersRef.current.size > 1) {
+        isDragging.current = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+
     e.preventDefault();  
     e.currentTarget.setPointerCapture(e.pointerId);
     isDragging.current = true;
@@ -217,7 +304,14 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-     e.preventDefault();  
+    if (e.pointerType === 'touch' && activeTouchPointersRef.current.size > 1) {
+      isDragging.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    e.preventDefault();  
     if (!isDragging.current) return;
     setViewState(prev => ({
       ...prev,
@@ -226,12 +320,49 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     }));
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent) => {
+    if (e?.pointerType === 'touch') {
+      activeTouchPointersRef.current.delete(e.pointerId);
+    }
+
     isDragging.current = false;
   };
 
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const modelsGroupRef = useRef<THREE.Group>(null);
   const transparentGroupRefs = useRef<(THREE.Group | null)[]>([]);
+
+  useEffect(() => {
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyOverscroll = document.body.style.overscrollBehavior;
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
+    document.documentElement.style.overscrollBehavior = 'none';
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overscrollBehavior = previousBodyOverscroll;
+      document.documentElement.style.overscrollBehavior = previousHtmlOverscroll;
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const preventNativeScroll = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    container.addEventListener('wheel', preventNativeScroll, { passive: false });
+    return () => container.removeEventListener('wheel', preventNativeScroll);
+  }, []);
 
   // --- Функция отправки статуса "прочитано" на сервер ---
   const markAsRead = async (sketchId: string | number) => {
@@ -349,6 +480,24 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     transparentGroupRefs.current = new Array(stlModels.length).fill(null);
   }, [stlModels]);
 
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const updateSize = () => {
+      setViewerSize({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
+
+    return () => observer.disconnect();
+  }, []);
+
   // Скачивание
   const downloadSvg = async (folderNumber: number) => {
     const token = localStorage.getItem('token');
@@ -389,7 +538,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   if (loading) {
     return (
-      <div className="h-screen bg-gray-900 text-white flex items-center justify-center">
+      <div className="flex h-[100dvh] items-center justify-center bg-gray-900 p-4 text-center text-white">
         Загрузка эскизов...
       </div>
     );
@@ -397,7 +546,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   if (!project || sketches.length === 0 || !currentSketch) {
     return (
-      <div className="h-screen bg-gray-900 text-red-500 flex items-center justify-center">
+      <div className="flex h-[100dvh] items-center justify-center bg-gray-900 p-4 text-center text-red-500">
         Нет сохранённых эскизов
       </div>
     );
@@ -405,18 +554,26 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   const anchorWidth = currentSketch.cameraState?.viewportWidth || canvasContainerRef.current?.clientWidth || 800;
   const anchorHeight = currentSketch.cameraState?.viewportHeight || canvasContainerRef.current?.clientHeight || 600;
+  const currentCanvasWidth = viewerSize.width || canvasContainerRef.current?.clientWidth || anchorWidth;
+  const currentCanvasHeight = viewerSize.height || canvasContainerRef.current?.clientHeight || anchorHeight;
+  const sketchDrawings = currentSketch.canvasData || (currentSketch as any)?.canvas_data || [];
+  const currentAudioNotes = currentSketch.audioNotes || (currentSketch as any)?.audio_notes || [];
+  const mapPointToCurrentView = (point: Point): Point => ({
+    x: currentCanvasWidth / 2 + (point.x - anchorWidth / 2),
+    y: currentCanvasHeight / 2 + (point.y - anchorHeight / 2),
+  });
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-gray-900 text-white lg:flex-row">
       {/* Левая панель: список эскизов с бейджами NEW */}
-      <div className="w-80 bg-gray-800 border-r border-gray-700 p-4 overflow-y-auto flex flex-col shrink-0">
-        <h2 className="text-xl font-bold mb-4">Эскизы проекта</h2>
-        <div className="space-y-2">
+      <div className="flex max-h-44 shrink-0 flex-col overflow-hidden border-b border-gray-700 bg-gray-800 p-3 lg:max-h-none lg:w-80 lg:border-b-0 lg:border-r lg:p-4">
+        <h2 className="mb-3 text-lg font-bold lg:mb-4 lg:text-xl">Эскизы проекта</h2>
+        <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-x-visible lg:overflow-y-auto lg:pb-0">
           {sketches.map((sketch) => (
-            <div key={sketch.id} className="flex items-center">
+            <div key={sketch.id} className="flex min-w-[13rem] items-center lg:min-w-0">
               <button
                 onClick={() => handleSketchSelect(sketch)}
-                className={`flex-1 text-left p-3 rounded-lg transition relative ${
+                className={`relative flex-1 rounded-lg p-3 text-left transition ${
                   sketch.id === currentSketch?.id
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-700 hover:bg-gray-600'
@@ -436,7 +593,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                   </div>
                 )}
               </button>
-              <div className="flex flex-col ml-2 space-y-1">
+              <div className="ml-2 flex flex-col space-y-1">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -464,15 +621,16 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       </div>
 
       {/* Центральная область: 3D + SVG */}
-     <div
-  ref={canvasContainerRef}
-  className="flex-1 relative overflow-hidden bg-black touch-none select-none"
-  onWheel={handleWheel}
-  onPointerDown={handlePointerDown}
-  onPointerMove={handlePointerMove}
-  onPointerUp={handlePointerUp}
-  onPointerLeave={handlePointerUp}
->
+      <div
+        ref={canvasContainerRef}
+        className="relative min-h-0 flex-1 touch-none select-none overflow-hidden bg-black"
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+      >
         <div
           className="absolute inset-0 origin-center"
           style={{
@@ -489,36 +647,149 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
             <ambientLight intensity={0.6} />
             <directionalLight position={[50, 50, 50]} intensity={1.5} />
             <directionalLight position={[-50, -50, -50]} intensity={0.5} />
-            {stlModels.map((model, index) => (
-              <STLMesh
-                key={model.id}
-                model={model}
-                index={index}
-                transparentGroupRefs={transparentGroupRefs}
-              />
-            ))}
+            <group ref={modelsGroupRef}>
+              {stlModels.map((model, index) => (
+                <STLMesh
+                  key={model.id}
+                  model={model}
+                  index={index}
+                  transparentGroupRefs={transparentGroupRefs}
+                />
+              ))}
+              <ModelNormalizer modelsGroupRef={modelsGroupRef} resetKey={`${currentSketch.id}:${stlModels.length}`} />
+            </group>
             <TransparencySorter transparentGroupRefs={transparentGroupRefs} />
           </Canvas>
 
-          {svgContent && (
-            <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible">
-              <div
-                style={{
-                  width: anchorWidth,
-                  height: anchorHeight,
-                  position: 'relative',
-                  flexShrink: 0,
-                }}
-                dangerouslySetInnerHTML={{ __html: svgContent }}
-              />
-            </div>
+          {sketchDrawings.length > 0 ? (
+            <svg
+              className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
+              width={currentCanvasWidth}
+              height={currentCanvasHeight}
+            >
+              {sketchDrawings.map((drawing: CanvasDrawing, index: number) => {
+                if (drawing.type === 'ruler') {
+                  const [pointA, pointB] = drawing.points.map(mapPointToCurrentView);
+
+                  return (
+                    <g key={index}>
+                      <line x1={pointA.x} y1={pointA.y} x2={pointB.x} y2={pointB.y} stroke="#3b82f6" strokeWidth="2" />
+                      <text x={pointB.x + 10} y={pointB.y} fill="#3b82f6" fontSize="16" fontWeight="bold">
+                        {drawing.value} mm
+                      </text>
+                    </g>
+                  );
+                }
+
+                if (drawing.type === 'circle') {
+                  const points = drawing.points.map(mapPointToCurrentView);
+                  const circle = getCircleGeometry(points);
+                  if (!circle) return null;
+
+                  return (
+                    <g key={index}>
+                      <circle cx={circle.centerX} cy={circle.centerY} r={circle.radius} stroke="#ef4444" strokeWidth="2" fill="none" />
+                      <text
+                        x={circle.centerX}
+                        y={circle.centerY}
+                        fill="#ef4444"
+                        fontSize="16"
+                        fontWeight="bold"
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                      >
+                        Ø {drawing.value}
+                      </text>
+                    </g>
+                  );
+                }
+
+                if (drawing.type === 'brush') {
+                  const points = drawing.points.map(mapPointToCurrentView);
+
+                  return (
+                    <path
+                      key={index}
+                      d={`M ${points.map((point) => `${point.x} ${point.y}`).join(' L ')}`}
+                      stroke={drawing.color || 'red'}
+                      strokeWidth="2"
+                      fill="none"
+                    />
+                  );
+                }
+
+                if (drawing.type === 'angle') {
+                  const [pointA, pointB, pointC] = drawing.points.map(mapPointToCurrentView);
+
+                  return (
+                    <g key={index}>
+                      <line x1={pointA.x} y1={pointA.y} x2={pointB.x} y2={pointB.y} stroke="yellow" strokeWidth="2" />
+                      <line x1={pointB.x} y1={pointB.y} x2={pointC.x} y2={pointC.y} stroke="yellow" strokeWidth="2" />
+                      <text x={pointB.x + 10} y={pointB.y - 10} fill="yellow" fontSize="16">
+                        {drawing.value}°
+                      </text>
+                    </g>
+                  );
+                }
+
+                if (drawing.type === 'text') {
+                  const target = mapPointToCurrentView(drawing.target);
+                  const labelPos = mapPointToCurrentView(drawing.labelPos);
+                  const note = currentSketch.textNotes?.find((item) => item.id === drawing.textId);
+                  const displayText = note ? String(drawing.textId) : '?';
+
+                  return (
+                    <g key={index}>
+                      <line
+                        x1={target.x}
+                        y1={target.y}
+                        x2={labelPos.x}
+                        y2={labelPos.y}
+                        stroke={drawing.color}
+                        strokeWidth="1.5"
+                        strokeDasharray="4 2"
+                      />
+                      <circle cx={target.x} cy={target.y} r={3} fill={drawing.color} />
+                      <text
+                        x={labelPos.x}
+                        y={labelPos.y}
+                        fill={drawing.color}
+                        fontSize={drawing.fontSize}
+                        fontFamily="Arial, sans-serif"
+                        fontWeight="bold"
+                        alignmentBaseline="middle"
+                        textAnchor="start"
+                      >
+                        {displayText}
+                      </text>
+                    </g>
+                  );
+                }
+
+                return null;
+              })}
+            </svg>
+          ) : (
+            svgContent && (
+              <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center overflow-visible">
+                <div
+                  style={{
+                    width: anchorWidth,
+                    height: anchorHeight,
+                    position: 'relative',
+                    flexShrink: 0,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: svgContent }}
+                />
+              </div>
+            )
           )}
         </div>
       </div>
 
       {/* Правая панель: комментарии врача */}
-      <div className="w-80 bg-gray-800 border-l border-gray-700 p-4 overflow-y-auto shrink-0">
-        <h3 className="text-lg font-semibold mb-4 flex items-center text-blue-400">
+      <div className="max-h-52 shrink-0 overflow-y-auto border-t border-gray-700 bg-gray-800 p-3 lg:max-h-none lg:w-80 lg:border-l lg:border-t-0 lg:p-4">
+        <h3 className="mb-3 flex items-center text-base font-semibold text-blue-400 lg:mb-4 lg:text-lg">
           <svg
             className="w-5 h-5 mr-2"
             fill="none"
@@ -535,23 +806,49 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
           Комментарии врача
         </h3>
 
-        <div className="space-y-4">
-          {currentSketch.textNotes && currentSketch.textNotes.length > 0 ? (
-            currentSketch.textNotes.map((note) => (
-              <div
-                key={note.id}
-                className="flex items-start space-x-3 p-3 bg-gray-750 rounded-xl shadow-md border border-gray-700 hover:border-blue-500/50 transition-colors"
-              >
-                <div className="flex-shrink-0 w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-                  {note.id}
+        <div className="space-y-3 lg:space-y-4">
+          {(currentSketch.textNotes && currentSketch.textNotes.length > 0) || currentAudioNotes.length > 0 ? (
+            <>
+              {currentSketch.textNotes?.map((note) => (
+                <div
+                  key={`text-${note.id}`}
+                  className="bg-gray-750 flex items-start space-x-3 rounded-xl border border-gray-700 p-3 shadow-md transition-colors hover:border-blue-500/50"
+                >
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-medium text-white">
+                    {note.id}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm leading-relaxed text-gray-200 whitespace-pre-wrap break-words">
+                      {note.text}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-                    {note.text}
-                  </p>
+              ))}
+
+              {currentAudioNotes.map((note: AudioNote) => (
+                <div
+                  key={`audio-${note.id}`}
+                  className="bg-gray-750 flex items-start space-x-3 rounded-xl border border-emerald-700/60 p-3 shadow-md transition-colors hover:border-emerald-500/80"
+                >
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-medium text-white shadow-[0_0_12px_rgba(16,185,129,0.35)]">
+                    🎤
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-xs font-bold text-emerald-300">Голосовая заметка #{note.id}</div>
+                      <div className="text-[10px] text-gray-400">
+                        {note.createdAt ? new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-700 bg-gray-900/70 p-2">
+                      <audio controls className="h-9 w-full accent-emerald-500" src={note.dataUrl}>
+                        Ваш браузер не поддерживает аудио.
+                      </audio>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center py-8 text-gray-400">
               <svg

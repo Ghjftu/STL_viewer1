@@ -3,44 +3,152 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.saveSketch = exports.saveProjectScene = exports.updateProject = exports.getProjectById = exports.getProjects = exports.createProject = void 0;
+exports.importSketches = exports.getSketchSvg = exports.getProjectSketches = exports.saveSketch = exports.saveProjectScene = exports.getProjectById = exports.markSketchAsRead = exports.getProjects = exports.createProject = exports.deleteFile = exports.updateProject = void 0;
 const db_1 = __importDefault(require("../config/db"));
+const crypto_1 = require("crypto");
 const fileSystem_1 = require("../utils/fileSystem");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+// Вспомогательная функция для безопасного получения строкового параметра
+const getParamAsString = (param) => {
+    if (Array.isArray(param))
+        return param[0];
+    return param || '';
+};
+const getUploadedFiles = (files) => {
+    return Array.isArray(files) ? files : [];
+};
+const getStorageRelativePath = (projectPath) => {
+    const relativePath = path_1.default.relative(fileSystem_1.STORAGE_DIR, projectPath);
+    return relativePath.startsWith('..') || path_1.default.isAbsolute(relativePath)
+        ? ''
+        : path_1.default.posix.join('storage', ...relativePath.split(path_1.default.sep));
+};
+const parseFileGroups = (rawValue) => {
+    if (typeof rawValue !== 'string')
+        return {};
+    try {
+        const parsed = JSON.parse(rawValue);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+    catch {
+        return {};
+    }
+};
+const parseBooleanFormValue = (value) => {
+    return value === true || value === 'true' || value === '1' || value === 'on';
+};
+const normalizeOptionalUuid = (value) => {
+    if (typeof value !== 'string')
+        return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === 'undefined' || trimmed === 'null')
+        return null;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
+        ? trimmed
+        : null;
+};
+// 1. Обновленный метод UPDATE (теперь принимает и файлы)
+const updateProject = async (req, res) => {
+    try {
+        const id = getParamAsString(req.params.id);
+        const { doctor_id, doctor_name, patient_name, is_public } = req.body;
+        const files = getUploadedFiles(req.files);
+        const normalizedDoctorId = normalizeOptionalUuid(doctor_id);
+        const isPublic = parseBooleanFormValue(is_public);
+        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0)
+            return res.status(404).json({ message: "Проект не найден" });
+        const projectPath = projectRes.rows[0].file_path_root;
+        await db_1.default.query(`UPDATE projects 
+       SET doctor_id = $1, doctor_display_name = $2, patient_name = $3, is_public = $4
+       WHERE id = $5`, [normalizedDoctorId, doctor_name || null, patient_name || null, isPublic, id]);
+        if (files.length > 0) {
+            const stlFolder = path_1.default.join(projectPath, 'stl');
+            if (!fs_1.default.existsSync(stlFolder))
+                fs_1.default.mkdirSync(stlFolder, { recursive: true });
+            files.forEach(file => {
+                const safeFileName = (0, fileSystem_1.getSafeFileName)(file.originalname);
+                if (!safeFileName)
+                    return;
+                const targetPath = path_1.default.join(stlFolder, safeFileName);
+                fs_1.default.copyFileSync(file.path, targetPath);
+                fs_1.default.unlinkSync(file.path);
+            });
+        }
+        res.json({ message: "Проект успешно обновлен" });
+    }
+    catch (error) {
+        console.error("❌ Ошибка обновления проекта:", error);
+        res.status(500).json({ message: "Ошибка сервера" });
+    }
+};
+exports.updateProject = updateProject;
+// 2. Метод для удаления файла
+const deleteFile = async (req, res) => {
+    try {
+        const id = getParamAsString(req.params.id);
+        const { fileName } = req.body;
+        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0)
+            return res.status(404).json({ message: "Проект не найден" });
+        const safeFileName = (0, fileSystem_1.getSafeFileName)(fileName);
+        if (!safeFileName || safeFileName !== fileName) {
+            return res.status(400).json({ message: "Некорректное имя файла" });
+        }
+        const filePath = path_1.default.join(projectRes.rows[0].file_path_root, 'stl', safeFileName);
+        if (fs_1.default.existsSync(filePath)) {
+            fs_1.default.unlinkSync(filePath);
+            res.json({ message: "Файл удален" });
+        }
+        else {
+            res.status(404).json({ message: "Файл не найден на диске" });
+        }
+    }
+    catch (error) {
+        res.status(500).json({ message: "Ошибка при удалении файла" });
+    }
+};
+exports.deleteFile = deleteFile;
 const createProject = async (req, res) => {
     try {
-        // Извлекаем данные из тела запроса
-        const { country, city, clinic, department, doctor_id, doctor_name, patient_name } = req.body;
-        const files = req.files;
+        const { country, city, clinic, department, doctor_id, doctor_name, patient_name, open_scene, is_public } = req.body;
+        const files = getUploadedFiles(req.files);
         console.log("🔍 [CREATING PROJECT] Data received:", req.body);
-        // 1. Защита от undefined: если поле пустое, ставим заглушку
         const sCountry = country || 'Unknown_Country';
         const sCity = city || 'Unknown_City';
         const sClinic = clinic || 'Unknown_Clinic';
         const sDept = department || 'Unknown_Department';
         const sDocName = doctor_name || 'Unknown_Doctor';
         const sPatient = patient_name || 'Unknown_Patient';
-        // 2. Создаем структуру папок согласно ТЗ: country/city/clinic/department/doctor/patient 
-        const projectPath = (0, fileSystem_1.createProjectPath)(sCountry, sCity, sClinic, sDept, sDocName, sPatient);
-        // 3. Записываем проект в базу данных
-        // 3. Записываем проект в базу данных
-        const result = await db_1.default.query(`INSERT INTO projects (doctor_id, patient_name, doctor_display_name, file_path_root) 
-      VALUES ($1, $2, $3, $4) RETURNING id`, [doctor_id, sPatient, sDocName, projectPath] // Записываем sDocName вместо статуса
-        );
-        const projectId = result.rows[0].id;
-        // 4. Перемещаем загруженные STL-файлы из временной папки в целевую папку 'stl' 
-        // Найдите цикл перемещения файлов в функции createProject и замените его на этот:
-        if (files && files.length > 0) {
+        const isPublic = parseBooleanFormValue(open_scene) || parseBooleanFormValue(is_public);
+        const projectId = (0, crypto_1.randomUUID)();
+        const projectPath = (0, fileSystem_1.createProjectPath)(sCountry, sCity, sClinic, sDept, sDocName, sPatient, projectId);
+        await db_1.default.query(`INSERT INTO projects (id, doctor_id, patient_name, doctor_display_name, file_path_root, is_public) 
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [projectId, doctor_id, sPatient, sDocName, projectPath, isPublic]);
+        if (files.length > 0) {
             const stlFolder = path_1.default.join(projectPath, 'stl');
             files.forEach(file => {
-                const targetPath = path_1.default.join(stlFolder, file.originalname);
-                // Вместо fs.renameSync используем:
+                const safeFileName = (0, fileSystem_1.getSafeFileName)(file.originalname);
+                if (!safeFileName)
+                    return;
+                const targetPath = path_1.default.join(stlFolder, safeFileName);
                 fs_1.default.copyFileSync(file.path, targetPath);
                 fs_1.default.unlinkSync(file.path);
             });
             console.log(`✅ ${files.length} STL files copied to ${stlFolder}`);
         }
+        const fileGroups = parseFileGroups(req.body.file_groups);
+        const initialSceneState = files.map((file, index) => ({
+            id: `stl-${index}`,
+            group: fileGroups[file.originalname] || 'Ткани',
+            visible: true,
+            color: '#cccccc',
+            opacity: 1,
+            position: [0, 0, 0],
+            rotation: [0, 0, 0]
+        }));
+        await db_1.default.query("UPDATE projects SET scene_state = $1 WHERE id = $2", [JSON.stringify(initialSceneState), projectId]);
         res.status(201).json({
             message: "Проект успешно создан",
             projectId,
@@ -60,13 +168,23 @@ exports.createProject = createProject;
 const getProjects = async (req, res) => {
     try {
         const { userId, role } = req.query;
-        let query = "SELECT * FROM projects ORDER BY created_at DESC";
+        const authUser = req.user;
+        const effectiveRole = authUser?.role || role;
+        const effectiveUserId = authUser?.userId || userId;
+        let query = `
+  SELECT 
+    p.*, 
+    u.full_name as doctor_display_name,
+    (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
+  FROM projects p
+  LEFT JOIN users u ON p.doctor_id = u.id
+`;
         let params = [];
-        // Если запрашивает врач, фильтруем только его проекты [cite: 17]
-        if (role === 'doctor' && userId) {
-            query = "SELECT * FROM projects WHERE doctor_id = $1 ORDER BY created_at DESC";
-            params = [userId];
+        if (effectiveRole === 'doctor' && effectiveUserId) {
+            query += ` WHERE p.doctor_id = $1`;
+            params = [effectiveUserId];
         }
+        query += ` ORDER BY p.created_at DESC`;
         const result = await db_1.default.query(query, params);
         res.json(result.rows);
     }
@@ -75,28 +193,40 @@ const getProjects = async (req, res) => {
     }
 };
 exports.getProjects = getProjects;
+const markSketchAsRead = async (req, res) => {
+    try {
+        const { sketchId } = req.params;
+        await db_1.default.query('UPDATE sketches SET is_read = true WHERE id = $1', [sketchId]);
+        res.json({ success: true });
+    }
+    catch (error) {
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+};
+exports.markSketchAsRead = markSketchAsRead;
 const getProjectById = async (req, res) => {
     try {
-        const { id } = req.params;
+        const id = getParamAsString(req.params.id);
         const result = await db_1.default.query("SELECT * FROM projects WHERE id = $1", [id]);
         if (result.rows.length === 0) {
             return res.status(404).json({ message: "Проект не найден" });
         }
+        // server/src/controllers/projectController.ts
         const project = result.rows[0];
+        const authUser = req.user;
+        if (!project.is_public && !authUser) {
+            return res.status(401).json({ message: "Для просмотра проекта требуется вход" });
+        }
         const stlFolder = path_1.default.join(project.file_path_root, 'stl');
-        // Вычисляем относительный путь для URL (например, /storage/Country/...)
-        const storageIndex = project.file_path_root.indexOf('storage/'); // ищем начало папки storage
-        const relativePath = storageIndex !== -1 ? project.file_path_root.substring(storageIndex) : '';
-        // Получаем протокол (http) и хост (ip:port или домен) прямо из запроса
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const relativePath = getStorageRelativePath(project.file_path_root);
         let stlFiles = [];
         if (fs_1.default.existsSync(stlFolder)) {
             const files = fs_1.default.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
             stlFiles = files.map((file, index) => ({
                 id: `stl-${index}`,
                 name: file,
-                url: `${baseUrl}/${relativePath}/stl/${file}`,
-                // Дефолтные настройки для сцены:
+                // УБИРАЕМ baseUrl. Путь должен начинаться со слеша /
+                url: `/${relativePath}/stl/${encodeURIComponent(file)}`,
                 position: [0, 0, 0],
                 rotation: [0, 0, 0],
                 color: '#cccccc',
@@ -112,30 +242,12 @@ const getProjectById = async (req, res) => {
     }
 };
 exports.getProjectById = getProjectById;
-// ... существующие импорты
-const updateProject = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { doctor_id, doctor_name, patient_name } = req.body;
-        // Обновляем данные проекта
-        await db_1.default.query(`UPDATE projects 
-       SET doctor_id = $1, doctor_display_name = $2, patient_name = $3
-       WHERE id = $4`, [doctor_id, doctor_name, patient_name, id]);
-        res.json({ message: "Проект обновлен" });
-    }
-    catch (error) {
-        console.error("❌ Ошибка обновления:", error);
-        res.status(500).json({ message: "Ошибка сервера" });
-    }
-};
-exports.updateProject = updateProject;
 const saveProjectScene = async (req, res) => {
     try {
-        const { id } = req.params;
-        const { sceneState } = req.body; // Сюда прилетит массив настроек (позиции, цвета)
-        // Обновляем поле scene_state в базе
+        const id = getParamAsString(req.params.id);
+        const { sceneState } = req.body;
         await db_1.default.query("UPDATE projects SET scene_state = $1 WHERE id = $2", [JSON.stringify(sceneState), id]);
-        console.log(`💾 Сцена проекта ${id} сохранена.`);
+        console.log(`💾 Сцена проекта ${id} была сохранена.`);
         res.json({ message: "Сцена успешно сохранена" });
     }
     catch (error) {
@@ -144,41 +256,52 @@ const saveProjectScene = async (req, res) => {
     }
 };
 exports.saveProjectScene = saveProjectScene;
-// Добавь этот экспорт в конец projectController.ts
+// НОВЫЙ МЕТОД СОХРАНЕНИЯ ЭСКИЗА В ПОДПАПКИ
 const saveSketch = async (req, res) => {
     try {
-        const { id } = req.params;
-        const { cameraState, canvasData, svgContent } = req.body;
-        // 1. Получаем корневой путь проекта из БД
+        const id = getParamAsString(req.params.id);
+        const { cameraState, canvasData, svgContent, textNotes, audioNotes, modelsState } = req.body; // <--- Добавили modelsState
         const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
         if (projectRes.rows.length === 0) {
             return res.status(404).json({ message: "Проект не найден" });
         }
         const projectPath = projectRes.rows[0].file_path_root;
-        // 2. Убеждаемся, что папка sketches существует
-        const sketchesDir = path_1.default.join(projectPath, 'sketches');
-        if (!fs_1.default.existsSync(sketchesDir)) {
-            fs_1.default.mkdirSync(sketchesDir, { recursive: true });
+        const sketchesBasePath = path_1.default.join(projectPath, 'sketches');
+        if (!fs_1.default.existsSync(sketchesBasePath)) {
+            fs_1.default.mkdirSync(sketchesBasePath, { recursive: true });
         }
-        // 3. Формируем уникальные имена файлов
-        const timestamp = Date.now();
-        const jsonFileName = `sketch_${timestamp}.json`;
-        const svgFileName = `sketch_${timestamp}.svg`;
-        // 4. Сохраняем файлы на диск (Файловая система)
-        fs_1.default.writeFileSync(path_1.default.join(sketchesDir, jsonFileName), JSON.stringify({ cameraState, canvasData }, null, 2));
+        const existingFolders = fs_1.default.readdirSync(sketchesBasePath, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => parseInt(dirent.name))
+            .filter(num => !isNaN(num));
+        const nextFolderNumber = existingFolders.length > 0
+            ? Math.max(...existingFolders) + 1
+            : 1;
+        const newSketchDirPath = path_1.default.join(sketchesBasePath, nextFolderNumber.toString());
+        fs_1.default.mkdirSync(newSketchDirPath, { recursive: true });
+        const jsonFileName = 'data.json';
+        const svgFileName = 'sketch.svg';
+        fs_1.default.writeFileSync(path_1.default.join(newSketchDirPath, jsonFileName), JSON.stringify({ cameraState, canvasData, textNotes, audioNotes, modelsState }, null, 2));
         if (svgContent) {
-            fs_1.default.writeFileSync(path_1.default.join(sketchesDir, svgFileName), svgContent);
+            fs_1.default.writeFileSync(path_1.default.join(newSketchDirPath, svgFileName), svgContent);
         }
-        console.log(`✅ Эскиз сохранен в файлы: ${jsonFileName}, ${svgFileName}`);
-        // 5. Записываем эскиз в базу данных
-        const sketchRes = await db_1.default.query(`INSERT INTO sketches (project_id, camera_state, canvas_data) 
-       VALUES ($1, $2, $3) RETURNING id`, [id, JSON.stringify(cameraState), JSON.stringify(canvasData)]);
+        console.log(`✅ Эскиз сохранен в папку: ${newSketchDirPath}`);
+        const sketchRes = await db_1.default.query(`INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, [
+            id,
+            JSON.stringify(cameraState),
+            JSON.stringify(canvasData),
+            JSON.stringify(textNotes || []),
+            JSON.stringify(audioNotes || []),
+            nextFolderNumber,
+            JSON.stringify(modelsState || []) // <--- Сохраняем в БД
+        ]);
         const sketchId = sketchRes.rows[0].id;
-        // 6. Формируем "болванку" для ТЗ 
         await db_1.default.query(`INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`, [id, sketchId]);
         res.status(200).json({
-            message: "Эскиз и ТЗ успешно сохранены",
-            sketchId
+            message: "Эскиз и ТЗ успешно сохранены в новую папку",
+            sketchId,
+            folderId: nextFolderNumber
         });
     }
     catch (error) {
@@ -187,3 +310,152 @@ const saveSketch = async (req, res) => {
     }
 };
 exports.saveSketch = saveSketch;
+// Получение списка эскизов проекта
+const getProjectSketches = async (req, res) => {
+    try {
+        const id = getParamAsString(req.params.id);
+        const result = await db_1.default.query(`SELECT id, folder_number, camera_state, canvas_data, text_notes, audio_notes, models_state, created_at, is_read
+  FROM sketches 
+  WHERE project_id = $1 
+  ORDER BY folder_number ASC`, [id]);
+        const sketches = result.rows.map(row => ({
+            id: row.id,
+            folderNumber: row.folder_number,
+            cameraState: row.camera_state,
+            canvasData: row.canvas_data,
+            textNotes: row.text_notes,
+            audioNotes: row.audio_notes || [],
+            modelsState: row.models_state, // <--- Передаем во фронтенд!
+            createdAt: row.created_at,
+            is_read: row.is_read,
+            svgUrl: `/api/projects/${id}/sketches/${row.folder_number}/svg`
+        }));
+        res.json(sketches);
+    }
+    catch (error) {
+        console.error("❌ Ошибка получения списка эскизов:", error);
+        res.status(500).json({ message: "Ошибка сервера" });
+    }
+};
+exports.getProjectSketches = getProjectSketches;
+// Получение SVG-файла эскиза
+const getSketchSvg = async (req, res) => {
+    try {
+        const id = getParamAsString(req.params.id);
+        const folder = getParamAsString(req.params.folder);
+        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0) {
+            return res.status(404).json({ message: "Проект не найден" });
+        }
+        const projectPath = projectRes.rows[0].file_path_root;
+        const svgPath = path_1.default.join(projectPath, 'sketches', folder, 'sketch.svg');
+        if (!fs_1.default.existsSync(svgPath)) {
+            return res.status(404).json({ message: "SVG файл не найден" });
+        }
+        const svgContent = fs_1.default.readFileSync(svgPath, 'utf-8');
+        res.type('image/svg+xml').send(svgContent);
+    }
+    catch (error) {
+        console.error("❌ Ошибка получения SVG:", error);
+        res.status(500).json({ message: "Ошибка сервера" });
+    }
+};
+exports.getSketchSvg = getSketchSvg;
+// НОВЫЙ МЕТОД ДЛЯ ИМПОРТА СТАРЫХ ЭСКИЗОВ
+const importSketches = async (req, res) => {
+    const files = req.files;
+    try {
+        const id = getParamAsString(req.params.id);
+        // 1. Проверяем существование проекта и находим его путь
+        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0) {
+            return res.status(404).json({ message: "Проект не найден" });
+        }
+        const projectPath = projectRes.rows[0].file_path_root;
+        const sketchesBasePath = path_1.default.join(projectPath, 'sketches');
+        if (!fs_1.default.existsSync(sketchesBasePath)) {
+            fs_1.default.mkdirSync(sketchesBasePath, { recursive: true });
+        }
+        // 2. Находим текущий максимальный номер папки, чтобы продолжить нумерацию
+        let currentMaxFolder = 0;
+        const existingFolders = fs_1.default.readdirSync(sketchesBasePath, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => parseInt(dirent.name))
+            .filter(num => !isNaN(num));
+        if (existingFolders.length > 0) {
+            currentMaxFolder = Math.max(...existingFolders);
+        }
+        // 3. Группируем файлы по базовому имени (например "sketch-1")
+        const fileGroups = {};
+        if (files) {
+            files.forEach(file => {
+                const ext = path_1.default.extname(file.originalname).toLowerCase();
+                const baseName = path_1.default.basename(file.originalname, ext);
+                if (!fileGroups[baseName])
+                    fileGroups[baseName] = {};
+                if (ext === '.json')
+                    fileGroups[baseName].json = file;
+                if (ext === '.svg')
+                    fileGroups[baseName].svg = file;
+            });
+        }
+        let importedCount = 0;
+        // 4. Обрабатываем каждую пару (или одиночный JSON)
+        for (const [baseName, group] of Object.entries(fileGroups)) {
+            if (!group.json)
+                continue; // Без JSON файла не можем восстановить данные, пропускаем
+            try {
+                // Читаем JSON
+                const jsonContent = fs_1.default.readFileSync(group.json.path, 'utf-8');
+                const parsedData = JSON.parse(jsonContent);
+                // Увеличиваем номер папки
+                currentMaxFolder += 1;
+                const nextFolderNumber = currentMaxFolder;
+                // Создаем папку для эскиза
+                const newSketchDirPath = path_1.default.join(sketchesBasePath, nextFolderNumber.toString());
+                fs_1.default.mkdirSync(newSketchDirPath, { recursive: true });
+                // Если есть SVG, копируем его туда
+                if (group.svg) {
+                    fs_1.default.copyFileSync(group.svg.path, path_1.default.join(newSketchDirPath, 'sketch.svg'));
+                }
+                const cameraState = parsedData.cameraState || null;
+                const canvasData = parsedData.canvasData || null; // <--- Здесь только canvasData
+                const textNotes = parsedData.textNotes || [];
+                const audioNotes = parsedData.audioNotes || [];
+                const modelsState = parsedData.modelsState || []; // <--- Вытаскиваем modelsState
+                // Пишем в БД эскиз
+                const sketchRes = await db_1.default.query(`INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, [
+                    id,
+                    JSON.stringify(cameraState),
+                    JSON.stringify(canvasData),
+                    JSON.stringify(textNotes),
+                    JSON.stringify(audioNotes),
+                    nextFolderNumber,
+                    JSON.stringify(modelsState) // <--- Сохраняем настройки прозрачности и цвета
+                ]);
+                // Привязываем к ТЗ (как это делает обычное сохранение)
+                await db_1.default.query(`INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`, [id, sketchRes.rows[0].id]);
+                importedCount++;
+            }
+            catch (err) {
+                console.error(`❌ Ошибка при обработке группы файлов ${baseName}:`, err);
+            }
+        }
+        res.json({ message: `Успешно импортировано эскизов: ${importedCount}` });
+    }
+    catch (error) {
+        console.error("❌ Ошибка импорта эскизов:", error);
+        res.status(500).json({ message: "Ошибка сервера при импорте" });
+    }
+    finally {
+        // 5. Очистка: обязательно удаляем временные файлы загруженные multer из папки uploads/
+        if (files) {
+            files.forEach(file => {
+                if (fs_1.default.existsSync(file.path))
+                    fs_1.default.unlinkSync(file.path);
+            });
+        }
+    }
+};
+exports.importSketches = importSketches;

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import logo from '../../assets/logo.jpg';
 
 interface LoginPageProps {
   onLoginSuccess: (role: string) => void;
@@ -54,9 +55,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900">
-      <form onSubmit={handleSubmit} className="bg-white p-8 rounded-lg shadow-xl w-96">
-        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">STL Viewer</h2>
+    <div className="flex min-h-screen items-center justify-center bg-white px-4 py-8">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl sm:p-8">
+        <img src={logo} alt="STL Viewer" className="mx-auto mb-6 h-24 w-24 rounded object-contain sm:h-28 sm:w-28" />
         {error && <p className="text-red-500 mb-4 text-sm bg-red-50 p-2 rounded">{error}</p>}
         <div className="mb-4">
           <label className="block text-gray-700 text-sm font-bold mb-2">Логин</label>

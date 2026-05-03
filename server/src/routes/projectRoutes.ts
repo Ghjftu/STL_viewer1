@@ -14,7 +14,7 @@ import {
   deleteFile,      
   importSketches
 } from '../controllers/projectController';
-import { authenticateToken } from '../middlewares/authMiddleware';
+import { authenticateToken, optionalAuthenticateToken } from '../middlewares/authMiddleware';
 
 const router = Router();
 const uploadDir = 'uploads/';
@@ -36,7 +36,7 @@ router.post('/:id/sketch', authenticateToken, saveSketch);
 router.get('/list', authenticateToken, getProjects);
 
 // 1. ПОЛУЧЕНИЕ ПРОЕКТА
-router.get('/:id', authenticateToken, (req: AuthRequest, res: Response) => {
+router.get('/:id', optionalAuthenticateToken, (req: AuthRequest, res: Response) => {
   getProjectById(req, res);
 });
 

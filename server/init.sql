@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     login TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
+    password_plain TEXT,
     role TEXT NOT NULL CHECK (role IN ('admin', 'doctor')),
     full_name TEXT NOT NULL,
     country TEXT,
@@ -14,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
     department TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_plain TEXT;
 
 -- 2. Таблица пациентов
 CREATE TABLE IF NOT EXISTS patients (
@@ -32,9 +35,12 @@ CREATE TABLE IF NOT EXISTS projects (
     file_path_root TEXT NOT NULL,
     patient_name TEXT,
     doctor_display_name TEXT,
+    is_public BOOLEAN DEFAULT FALSE,
     scene_state JSONB,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
 
 -- 4. Элементы 3D сцены (STL файлы)
 CREATE TABLE IF NOT EXISTS scene_elements (
@@ -55,12 +61,15 @@ CREATE TABLE IF NOT EXISTS sketches (
     camera_state JSONB NOT NULL,
     canvas_data JSONB NOT NULL,
     text_notes JSONB DEFAULT '[]',       -- Массив текстовых заметок
+    audio_notes JSONB DEFAULT '[]',      -- Массив голосовых заметок
     models_state JSONB,                  -- НОВОЕ ПОЛЕ: Состояние прозрачности и цвета моделей
     folder_number INTEGER,               -- Номер папки для привязки к файловой структуре
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(project_id, folder_number),    -- Гарантирует уникальность папок в рамках проекта
     is_read BOOLEAN DEFAULT FALSE
 );
+
+ALTER TABLE sketches ADD COLUMN IF NOT EXISTS audio_notes JSONB DEFAULT '[]';
 
 -- 6. Техническое задание (Финальный документ)
 CREATE TABLE IF NOT EXISTS technical_tasks (

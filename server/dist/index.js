@@ -14,16 +14,19 @@ const init_db_1 = require("./scripts/init-db");
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 8000;
+// 1. Настройки безопасности и парсинга
 app.use((0, cors_1.default)({ origin: '*' }));
-app.use(express_1.default.json());
+app.use(express_1.default.json({ limit: '100mb' }));
+app.use(express_1.default.urlencoded({ limit: '100mb', extended: true }));
+// 2. Раздача папки с 3D-моделями (это оставляем, это нужно!)
 app.use('/storage', express_1.default.static(path_1.default.join(__dirname, '../storage')));
+// 3. API Маршруты
 app.use('/api/auth', authRoutes_1.default);
 app.use('/api/doctors', doctorRoutes_1.default);
 app.use('/api/projects', projectRoutes_1.default);
-const clientDistPath = path_1.default.join(__dirname, '../../client');
-app.use(express_1.default.static(clientDistPath));
-app.get(/(.*)/, (req, res) => {
-    res.sendFile(path_1.default.join(clientDistPath, 'index.html'));
+// Если запрос пришел на /api/..., но маршрут не найден
+app.use('/api', (req, res) => {
+    res.status(404).json({ message: "API route not found" });
 });
 app.listen(PORT, async () => {
     console.log(`🚀 Server started on port ${PORT}`);

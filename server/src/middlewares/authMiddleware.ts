@@ -27,3 +27,21 @@ export const authenticateToken = (req: any, res: Response, next: NextFunction) =
     res.status(403).json({ error: 'Invalid Token' });
   }
 };
+
+export const optionalAuthenticateToken = (req: any, _res: Response, next: NextFunction) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token || token === 'null' || token === 'undefined') {
+    next();
+    return;
+  }
+
+  try {
+    req.user = jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me_in_prod');
+  } catch {
+    req.user = undefined;
+  }
+
+  next();
+};

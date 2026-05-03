@@ -5,6 +5,7 @@ import { OrthographicCamera, ArcballControls, useProgress } from '@react-three/d
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { SketchViewer } from './SketchViewer';
+import logo from '../../assets/logo.jpg';
 
 type ToolType = 'none' | 'ruler' | 'angle' | 'circle' | 'brush' | 'text';
 type Point = { x: number; y: number };
@@ -17,6 +18,9 @@ type Drawing =
   | { type: 'circle'; points: Point[]; value: number }
   | { type: 'brush'; points: Point[]; color: string }
   | { type: 'text'; target: Point; labelPos: Point; textId: number; color: string; fontSize: number };
+
+type MeasurementDrawing = Extract<Drawing, { type: 'ruler' | 'angle' | 'circle' }>;
+type AudioNote = { id: number; dataUrl: string; mimeType: string; createdAt: string };
 
 interface SceneStateItem {
   id: ModelId;
@@ -37,6 +41,7 @@ interface STLModel extends SceneStateItem {
 interface ProjectData {
   patient_name?: string;
   doctor_display_name?: string;
+  is_public?: boolean;
   scene_state?: string | SceneStateItem[];
 }
 
@@ -55,11 +60,14 @@ const DEFAULT_MODEL_COLOR = '#cccccc';
 const DEFAULT_POSITION: Vector3Tuple = [0, 0, 0];
 const DEFAULT_ROTATION: Vector3Tuple = [0, 0, 0];
 const SCENE_SAVE_DELAY_MS = 350;
-const RULER_THICKNESS = 28;
+const RULER_THICKNESS = 40;
 
 const getSceneStorageKey = (projectId: string) => `viewer3d:scene:${projectId}`;
 
 const clampOpacity = (value: number) => Math.min(1, Math.max(0, value));
+
+const isMeasurementDrawing = (drawing: Drawing): drawing is MeasurementDrawing =>
+  drawing.type === 'ruler' || drawing.type === 'angle' || drawing.type === 'circle';
 
 const parseSceneState = (value: unknown): SceneStateItem[] => {
   if (!value) return [];
@@ -131,6 +139,32 @@ const formatValue = (value: number): string => {
   if (abs >= 100) return value.toFixed(0);
   if (abs >= 1) return value.toFixed(1);
   return value.toFixed(2);
+};
+
+const getCircleGeometry = (points: Point[]) => {
+  if (points.length < 3) return null;
+
+  const [point1, point2, point3] = points;
+  const determinant =
+    2 * (point1.x * (point2.y - point3.y) + point2.x * (point3.y - point1.y) + point3.x * (point1.y - point2.y));
+  if (Math.abs(determinant) < 1e-10) return null;
+
+  const point1Squared = point1.x * point1.x + point1.y * point1.y;
+  const point2Squared = point2.x * point2.x + point2.y * point2.y;
+  const point3Squared = point3.x * point3.x + point3.y * point3.y;
+  const centerX =
+    (point1Squared * (point2.y - point3.y) +
+      point2Squared * (point3.y - point1.y) +
+      point3Squared * (point1.y - point2.y)) /
+    determinant;
+  const centerY =
+    (point1Squared * (point3.x - point2.x) +
+      point2Squared * (point1.x - point3.x) +
+      point3Squared * (point2.x - point1.x)) /
+    determinant;
+  const radius = Math.hypot(point1.x - centerX, point1.y - centerY);
+
+  return { centerX, centerY, radius };
 };
 
 const CameraTracker = ({ cameraRef }: { cameraRef: React.MutableRefObject<THREE.OrthographicCamera | null> }) => {
@@ -374,6 +408,51 @@ const Rulers: React.FC<{
   );
 };
 
+/* 
+  LoadWatcher: компонент внутри Canvas.
+  Сообщает родителю актуальное состояние загрузки.
+*/
+const LoadWatcher: React.FC<{
+  onStateChange: (state: { loading: boolean; progress: number }) => void;
+}> = ({ onStateChange }) => {
+  const { active, progress } = useProgress();
+
+  useEffect(() => {
+    onStateChange({ loading: active || progress < 100, progress });
+  }, [active, progress, onStateChange]);
+
+  return null;
+};
+
+/*
+  ModelNormalizer: после полной загрузки моделей вычисляет их общий Bounding Box
+  и сдвигает всю группу так, чтобы геометрический центр оказался в (0,0,0).
+  Выполняется один раз, при последующих изменениях моделей не срабатывает.
+*/
+const ModelNormalizer: React.FC<{
+  modelsGroupRef: React.RefObject<THREE.Group | null>; 
+}> = ({ modelsGroupRef }) => {
+  const { active, progress } = useProgress();
+  const modelsLoading = active || progress < 100;
+  const normalizedRef = useRef(false);
+
+  useEffect(() => {
+    if (normalizedRef.current || modelsLoading || !modelsGroupRef.current) return;
+
+    const box = new THREE.Box3().setFromObject(modelsGroupRef.current);
+    if (box.isEmpty()) return;
+
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+
+    // Смещаем группу так, чтобы центр оказался в (0,0,0)
+    modelsGroupRef.current.position.copy(center.clone().negate());
+    normalizedRef.current = true;
+  }, [modelsLoading, modelsGroupRef]);
+
+  return null;
+};
+
 const Viewer3DScene: React.FC<{
   projectId: string;
   currentPath: string;
@@ -385,15 +464,20 @@ const Viewer3DScene: React.FC<{
   const [activeTool, setActiveTool] = useState<ToolType>('none');
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
+  const [circlePreviewPoint, setCirclePreviewPoint] = useState<Point | null>(null);
+  const [editableDrawingIndex, setEditableDrawingIndex] = useState<number | null>(null);
   const [isDrawingBrush, setIsDrawingBrush] = useState(false);
   const [textNotes, setTextNotes] = useState<{ id: number; text: string }[]>([]);
   const [textCounter, setTextCounter] = useState(0);
+  const [audioNotes, setAudioNotes] = useState<AudioNote[]>([]);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [cameraParams, setCameraParams] = useState<CameraParams | null>(null);
+  const [toastMessage, setToastMessage] = useState('');
 
-  // Прогресс загрузки моделей
-  const { progress, active } = useProgress();
-  const modelsLoading = active || progress < 100;
+  // Состояние загрузки, обновляемое LoadWatcher'ом внутри Canvas
+  const [loadingState, setLoadingState] = useState({ loading: true, progress: 0 });
+  const modelsLoading = loadingState.loading;
 
   const settingsPanelRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -401,19 +485,21 @@ const Viewer3DScene: React.FC<{
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const transparentGroupRefs = useRef<(THREE.Group | null)[]>([]);
+  const modelsGroupRef = useRef<THREE.Group>(null);
   const lastTouchEndTimeRef = useRef(0);
   const latestModelsRef = useRef<STLModel[]>([]);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentPointsRef = useRef<Point[]>([]);
   const activePointerIdRef = useRef<number | null>(null);
   const activeTouchPointersRef = useRef<Set<number>>(new Set());
+  const measurementDragRef = useRef<{ drawingIndex: number; pointIndex: number } | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioStopRequestedRef = useRef(false);
+  const audioRecordingStartedAtRef = useRef(0);
   const gestureModeRef = useRef<'none' | 'tool' | 'controls'>('none');
   const viewportSizeRef = useRef({ width: 0, height: 0 });
-
-  // Флаги для центрирования моделей (а не камеры)
-  const isCenteringRef = useRef(false);
-  const hasCentered = useRef(false);
-  const userInteracted = useRef(false);
 
   const tools = useMemo(
     () => [
@@ -558,28 +644,44 @@ const Viewer3DScene: React.FC<{
       if (activeTool === 'ruler') {
         if (currentPoints.length === 0) {
           setCurrentPoints([point]);
+          setEditableDrawingIndex(null);
           return;
         }
 
         const distance = calculateDistance(currentPoints[0], point);
-        setDrawings((previous) => [
-          ...previous,
-          { type: 'ruler', points: [currentPoints[0], point], value: Number(distance.toFixed(1)) },
-        ]);
+        setDrawings((previous) => {
+          const nextDrawings = [
+            ...previous,
+            { type: 'ruler' as const, points: [currentPoints[0], point], value: Number(distance.toFixed(1)) },
+          ];
+          setEditableDrawingIndex(nextDrawings.length - 1);
+          return nextDrawings;
+        });
         setCurrentPoints([]);
         return;
       }
 
       if (activeTool === 'circle') {
         const points = [...currentPoints, point];
-        setCurrentPoints(points);
 
         if (points.length === 3) {
           const diameter = calculateCircleDiameter(points[0], points[1], points[2]);
           if (diameter > 0) {
-            setDrawings((previous) => [...previous, { type: 'circle', points, value: Number(diameter.toFixed(1)) }]);
+            setDrawings((previous) => {
+              const nextDrawings = [...previous, { type: 'circle' as const, points, value: Number(diameter.toFixed(1)) }];
+              setEditableDrawingIndex(nextDrawings.length - 1);
+              return nextDrawings;
+            });
           }
+          setCirclePreviewPoint(null);
           setCurrentPoints([]);
+          return;
+        }
+
+        setCurrentPoints(points);
+        setCirclePreviewPoint(null);
+        if (points.length === 1) {
+          setEditableDrawingIndex(null);
         }
         return;
       }
@@ -588,9 +690,16 @@ const Viewer3DScene: React.FC<{
         const points = [...currentPoints, point];
         if (points.length < 3) {
           setCurrentPoints(points);
+          if (points.length === 1) {
+            setEditableDrawingIndex(null);
+          }
         } else {
           const angle = calculateAngle(points[0], points[1], points[2]);
-          setDrawings((previous) => [...previous, { type: 'angle', points, value: Number(angle.toFixed(1)) }]);
+          setDrawings((previous) => {
+            const nextDrawings = [...previous, { type: 'angle' as const, points, value: Number(angle.toFixed(1)) }];
+            setEditableDrawingIndex(nextDrawings.length - 1);
+            return nextDrawings;
+          });
           setCurrentPoints([]);
         }
       }
@@ -598,165 +707,31 @@ const Viewer3DScene: React.FC<{
     [activeTool, calculateAngle, calculateCircleDiameter, calculateDistance, currentPoints, textCounter]
   );
 
-  // ========== НОВАЯ ЛОГИКА ЦЕНТРИРОВАНИЯ МОДЕЛЕЙ ==========
-  const centerModelsAtOrigin = useCallback(async (): Promise<void> => {
-    if (stlModels.length === 0 || isCenteringRef.current || hasCentered.current || userInteracted.current) return;
-
-    isCenteringRef.current = true;
-
-    const loader = new STLLoader();
-
-    try {
-      const results = await Promise.allSettled(
-        stlModels.map(async (model) => {
-          if (userInteracted.current) throw new Error('Cancelled');
-
-          const geometry = await new Promise<THREE.BufferGeometry>((resolve, reject) => {
-            loader.load(model.url, resolve, undefined, reject);
-          });
-
-          if (userInteracted.current) throw new Error('Cancelled');
-
-          geometry.computeBoundingBox();
-          if (!geometry.boundingBox) return null;
-
-          const position = new THREE.Vector3(...model.position);
-          const rotation = new THREE.Euler(
-            THREE.MathUtils.degToRad(model.rotation[0]),
-            THREE.MathUtils.degToRad(model.rotation[1]),
-            THREE.MathUtils.degToRad(model.rotation[2]),
-            'XYZ'
-          );
-          const matrix = new THREE.Matrix4().compose(
-            position,
-            new THREE.Quaternion().setFromEuler(rotation),
-            new THREE.Vector3(1, 1, 1)
-          );
-
-          const localCenter = geometry.boundingBox.getCenter(new THREE.Vector3());
-          const worldCenter = localCenter.applyMatrix4(matrix);
-
-          return worldCenter;
-        })
-      );
-
-      if (userInteracted.current) return;
-
-      const centers = results
-        .filter((result): result is PromiseFulfilledResult<THREE.Vector3> => 
-          result.status === 'fulfilled' && result.value !== null
-        )
-        .map((result) => result.value);
-
-      if (centers.length === 0) return;
-
-      const avg = centers.reduce((sum, v) => sum.add(v), new THREE.Vector3()).divideScalar(centers.length);
-
-      const updatedModels = stlModels.map((model) => ({
-        ...model,
-        position: [
-          model.position[0] - avg.x,
-          model.position[1] - avg.y,
-          model.position[2] - avg.z,
-        ] as Vector3Tuple,
-      }));
-
-      setStlModels(updatedModels);
-      persistSceneStateLocally(updatedModels);
-      scheduleSceneStateSync(updatedModels);
-
-      hasCentered.current = true;
-
-      if (cameraRef.current && controlsRef.current) {
-        cameraRef.current.position.set(0, 0, 150);
-        cameraRef.current.zoom = 2;
-        cameraRef.current.updateProjectionMatrix();
-        controlsRef.current.target.set(0, 0, 0);
-        controlsRef.current.update();
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message === 'Cancelled') {
-        console.log('Centering cancelled by user interaction');
-      } else {
-        console.error('Centering failed', error);
-      }
-    } finally {
-      isCenteringRef.current = false;
-    }
-  }, [stlModels, persistSceneStateLocally, scheduleSceneStateSync]);
-
   useEffect(() => {
-    if (stlModels.length === 0) return;
+    if (!toastMessage) return;
 
-    let attempts = 0;
-    const maxAttempts = 30;
-    const interval = 100;
-
-    const tryCenter = () => {
-      if (cameraRef.current && controlsRef.current) {
-        centerModelsAtOrigin().catch(() => {});
-      } else if (attempts < maxAttempts) {
-        attempts++;
-        setTimeout(tryCenter, interval);
-      } else {
-        console.warn('Failed to center models: camera or controls not available');
-      }
-    };
-
-    tryCenter();
-
-    return () => {
-      userInteracted.current = true;
-    };
-  }, [stlModels, centerModelsAtOrigin]);
-
-  useEffect(() => {
-    userInteracted.current = false;
-    hasCentered.current = false;
-    transparentGroupRefs.current = [];
-  }, [projectId]);
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-
-    const onWheel = () => {
-      userInteracted.current = true;
-    };
-
-    viewport.addEventListener('wheel', onWheel, { passive: true });
-    return () => {
-      viewport.removeEventListener('wheel', onWheel);
-    };
-  }, []);
-
-  // ========== ОСТАЛЬНЫЕ ЭФФЕКТЫ (без изменений) ==========
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) return;
-
-    localStorage.setItem('returnUrl', currentPath);
-    navigate('/', { replace: true });
-  }, [currentPath, navigate]);
+    const timeoutId = window.setTimeout(() => setToastMessage(''), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [toastMessage]);
 
   useEffect(() => {
     setLoading(true);
 
     const token = localStorage.getItem('token');
-    if (!token) {
-      setLoading(false);
-      return;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
 
     fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
+      headers,
     })
       .then(async (response) => {
         if (response.status === 401 || response.status === 403) {
-          localStorage.removeItem('token');
+          if (token) localStorage.removeItem('token');
           localStorage.setItem('returnUrl', currentPath);
           navigate('/', { replace: true });
           throw new Error('Unauthorized');
@@ -770,9 +745,8 @@ const Viewer3DScene: React.FC<{
         setProject(data.project);
 
         const serverSceneState = parseSceneState(data.project.scene_state);
-const localSceneState = parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
-// Используем серверные данные, если они есть. Иначе берем локальные.
-const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneState;
+        const localSceneState = parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
+        const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneState;
         const mergedModels = mergeModelsWithState(data.stlFiles ?? [], sceneState);
 
         latestModelsRef.current = mergedModels;
@@ -882,9 +856,124 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
     setCameraParams(params);
   }, []);
 
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('role');
+    localStorage.removeItem('name');
+    localStorage.removeItem('userId');
+    localStorage.setItem('returnUrl', currentPath);
+    navigate('/', { replace: true });
+  };
+
+  const startAudioRecording = useCallback(async () => {
+    if (isRecordingAudio) return;
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      window.alert('Запись аудио не поддерживается этим браузером.');
+      return;
+    }
+
+    try {
+      audioStopRequestedRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : '';
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+      audioChunksRef.current = [];
+      audioStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const chunks = audioChunksRef.current;
+        const recordedMimeType = recorder.mimeType || 'audio/webm';
+        const recordingDuration = Date.now() - audioRecordingStartedAtRef.current;
+        audioChunksRef.current = [];
+        audioStopRequestedRef.current = false;
+        audioRecordingStartedAtRef.current = 0;
+        audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        setIsRecordingAudio(false);
+
+        if (recordingDuration < 500) {
+          setToastMessage('Зажмите кнопку микрофона для записи.');
+          return;
+        }
+
+        if (chunks.length === 0) return;
+
+        const blob = new Blob(chunks, { type: recordedMimeType });
+        if (blob.size === 0) return;
+
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+          if (!dataUrl) return;
+
+          setAudioNotes((previous) => {
+            const nextId = previous.reduce((maxId, note) => Math.max(maxId, note.id), 0) + 1;
+            return [
+              ...previous,
+              {
+                id: nextId,
+                dataUrl,
+                mimeType: recordedMimeType,
+                createdAt: new Date().toISOString(),
+              },
+            ];
+          });
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      recorder.start();
+      audioRecordingStartedAtRef.current = Date.now();
+      setIsRecordingAudio(true);
+
+      if (audioStopRequestedRef.current) {
+        recorder.stop();
+      }
+    } catch {
+      setIsRecordingAudio(false);
+      window.alert('Не удалось начать запись. Проверьте доступ к микрофону.');
+    }
+  }, [isRecordingAudio]);
+
+  const stopAudioRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      audioStopRequestedRef.current = true;
+      return;
+    }
+
+    if (recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
   const handleUndoDraw = () => {
     if (currentPoints.length > 0) {
       setCurrentPoints([]);
+      setCirclePreviewPoint(null);
       setIsDrawingBrush(false);
       return;
     }
@@ -894,25 +983,39 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
       setTextNotes((previous) => previous.filter((note) => note.id !== lastDrawing.textId));
     }
 
-    setDrawings((previous) => previous.slice(0, -1));
+    if (drawings.length > 0) {
+      setDrawings((previous) => previous.slice(0, -1));
+    } else if (audioNotes.length > 0) {
+      setAudioNotes((previous) => previous.slice(0, -1));
+    }
+    setEditableDrawingIndex(null);
   };
 
   const handleClearAll = () => {
-    if (!window.confirm('    ?')) return;
+    if (!window.confirm('Удалить все пометки?')) return;
 
     setDrawings([]);
     setCurrentPoints([]);
+    setCirclePreviewPoint(null);
+    setEditableDrawingIndex(null);
     setTextNotes([]);
+    setAudioNotes([]);
     setIsDrawingBrush(false);
   };
 
   const handleFinish = async () => {
-    if (drawings.length === 0) {
-      window.alert('       .');
+    if (drawings.length === 0 && audioNotes.length === 0) {
+      window.alert('Нет заметок для сохранения.');
       return;
     }
 
-    if (!window.confirm('  ?')) {
+    if (!window.confirm('Сохранить пометки?')) {
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) {
+      window.alert('Чтобы сохранить пометки, войдите в систему.');
       return;
     }
 
@@ -932,12 +1035,12 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
       cameraState,
       canvasData: drawings,
       textNotes,
+      audioNotes,
       svgContent: svgRef.current ? svgRef.current.outerHTML : null,
       modelsState: serializeSceneState(stlModels),
     };
 
     try {
-      const token = localStorage.getItem('token');
       const response = await fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketch`, {
         method: 'POST',
         headers: {
@@ -949,18 +1052,21 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
 
       if (!response.ok) {
         const error = await response.json();
-        window.alert(`: ${error.message}`);
+        window.alert(`Ошибка: ${error.message}`);
         return;
       }
 
-      window.alert(' .');
+      setToastMessage('Пометки сохранены.');
       setActiveTool('none');
       setDrawings([]);
       setCurrentPoints([]);
+      setCirclePreviewPoint(null);
+      setEditableDrawingIndex(null);
       setTextNotes([]);
+      setAudioNotes([]);
       setIsDrawingBrush(false);
     } catch {
-      window.alert('   .');
+      window.alert('Ошибка сети.');
     }
   };
 
@@ -969,14 +1075,77 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
     return Boolean(target.closest('button, input, select, textarea, [data-ui-control="true"]'));
   };
 
-  const handleWheel = useCallback(() => {
-    userInteracted.current = true;
-  }, []);
+  const updateMeasurementPoint = useCallback(
+    (drawingIndex: number, pointIndex: number, point: Point) => {
+      setDrawings((previous) =>
+        previous.map((drawing, index) => {
+          if (index !== drawingIndex) return drawing;
+          if (!isMeasurementDrawing(drawing)) return drawing;
+          if (pointIndex < 0 || pointIndex >= drawing.points.length) return drawing;
+
+          const points = drawing.points.map((existingPoint: Point, existingIndex: number) =>
+            existingIndex === pointIndex ? point : existingPoint
+          );
+
+          if (drawing.type === 'ruler') {
+            const distance = calculateDistance(points[0], points[1]);
+
+            return {
+              ...drawing,
+              points,
+              value: Number(distance.toFixed(1)),
+            };
+          }
+
+          if (drawing.type === 'angle') {
+            const angle = calculateAngle(points[0], points[1], points[2]);
+
+            return {
+              ...drawing,
+              points,
+              value: Number(angle.toFixed(1)),
+            };
+          }
+
+          const diameter = calculateCircleDiameter(points[0], points[1], points[2]);
+
+          return {
+            ...drawing,
+            points,
+            value: diameter > 0 ? Number(diameter.toFixed(1)) : drawing.value,
+          };
+        })
+      );
+    },
+    [calculateAngle, calculateCircleDiameter, calculateDistance]
+  );
+
+  const getMeasurementHandleAtPoint = useCallback(
+    (point: Point) => {
+      if (!['ruler', 'angle', 'circle'].includes(activeTool)) return null;
+
+      for (let drawingIndex = drawings.length - 1; drawingIndex >= 0; drawingIndex--) {
+        const drawing = drawings[drawingIndex];
+        if (drawing.type !== activeTool) continue;
+        if (!isMeasurementDrawing(drawing)) continue;
+
+        for (let pointIndex = drawing.points.length - 1; pointIndex >= 0; pointIndex--) {
+          if (drawing.type === 'circle' && pointIndex !== 2) continue;
+
+          const handlePoint = drawing.points[pointIndex];
+          if (Math.hypot(point.x - handlePoint.x, point.y - handlePoint.y) <= 24) {
+            return { drawingIndex, pointIndex };
+          }
+        }
+      }
+
+      return null;
+    },
+    [activeTool, drawings]
+  );
 
   const handlePointerDownCapture = (event: React.PointerEvent<HTMLDivElement>) => {
     if (isInteractiveUiTarget(event.target)) return;
-
-    userInteracted.current = true;
 
     if (event.pointerType === 'touch') {
       activeTouchPointersRef.current.add(event.pointerId);
@@ -988,12 +1157,25 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
     }
 
     if (event.pointerType === 'touch' && activeTouchPointersRef.current.size > 1) {
-      gestureModeRef.current = 'controls';
+      gestureModeRef.current = 'tool';
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
     const point = getPointFromClient(event.clientX, event.clientY);
     if (!point) return;
+
+    const measurementHandle = getMeasurementHandleAtPoint(point);
+    if (measurementHandle) {
+      activePointerIdRef.current = event.pointerId;
+      measurementDragRef.current = measurementHandle;
+      setEditableDrawingIndex(measurementHandle.drawingIndex);
+      gestureModeRef.current = 'tool';
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
 
     activePointerIdRef.current = event.pointerId;
     gestureModeRef.current = 'tool';
@@ -1006,18 +1188,43 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
       return;
     }
 
+    if (activeTool === 'circle' && currentPointsRef.current.length === 2) {
+      setCirclePreviewPoint(point);
+    }
+
     event.preventDefault();
     event.stopPropagation();
   };
 
   const handlePointerMoveCapture = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (activeTool !== 'none' && event.pointerType === 'touch' && activeTouchPointersRef.current.size > 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (gestureModeRef.current !== 'tool') return;
-    if (activeTool !== 'brush') return;
-    if (!isDrawingBrush) return;
     if (activePointerIdRef.current !== event.pointerId) return;
 
     const point = getPointFromClient(event.clientX, event.clientY);
     if (!point) return;
+
+    if (measurementDragRef.current) {
+      updateMeasurementPoint(measurementDragRef.current.drawingIndex, measurementDragRef.current.pointIndex, point);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (activeTool === 'circle' && currentPointsRef.current.length === 2) {
+      setCirclePreviewPoint(point);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (activeTool !== 'brush') return;
+    if (!isDrawingBrush) return;
 
     setCurrentPoints((previous) => [...previous, point]);
     event.preventDefault();
@@ -1039,7 +1246,22 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
     const point = getPointFromClient(event.clientX, event.clientY);
     if (!point) return;
 
-    if (activeTool === 'brush') {
+    if (measurementDragRef.current) {
+      updateMeasurementPoint(measurementDragRef.current.drawingIndex, measurementDragRef.current.pointIndex, point);
+      measurementDragRef.current = null;
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (activeTool === 'circle' && currentPointsRef.current.length === 2) {
+      setCirclePreviewPoint(null);
+      if (!(event.pointerType === 'mouse' && Date.now() - lastTouchEndTimeRef.current < 300)) {
+        handleToolPoint(point);
+      }
+      if (event.pointerType === 'touch') {
+        lastTouchEndTimeRef.current = Date.now();
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (activeTool === 'brush') {
       setIsDrawingBrush(false);
       setDrawings((previous) => [
         ...previous,
@@ -1070,7 +1292,9 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
 
     if (activePointerIdRef.current === event.pointerId) {
       activePointerIdRef.current = null;
+      measurementDragRef.current = null;
       setIsDrawingBrush(false);
+      setCirclePreviewPoint(null);
       setCurrentPoints([]);
     }
 
@@ -1080,7 +1304,12 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
   };
 
   if (loading) {
-    return <div className="flex h-[100dvh] items-center justify-center bg-gray-900 text-white">Loading...</div>;
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center bg-white text-gray-800">
+        <img src={logo} alt="STL Viewer" className="mb-5 h-28 w-28 rounded object-contain" />
+        <div className="text-sm font-semibold">Loading...</div>
+      </div>
+    );
   }
 
   if (!project) {
@@ -1097,20 +1326,40 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
         onPointerMoveCapture={handlePointerMoveCapture}
         onPointerUpCapture={handlePointerUpCapture}
         onPointerCancelCapture={handlePointerCancelCapture}
-        onWheel={handleWheel}
+        onWheelCapture={(event) => {
+          if (activeTool === 'none') return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
       >
+        {(toastMessage || audioNotes.length > 0) && (
+          <div className="pointer-events-none absolute right-4 top-16 z-40 flex flex-col items-end gap-2">
+            {toastMessage && (
+              <div className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-lg">
+                {toastMessage}
+              </div>
+            )}
+            {audioNotes.length > 0 && (
+              <div className="rounded-lg border border-emerald-400/40 bg-emerald-600/90 px-4 py-2 text-sm font-bold text-white shadow-lg">
+                Голосовых заметок: {audioNotes.length}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Полоса загрузки моделей */}
         {modelsLoading && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70">
-            <div className="w-64 rounded-lg bg-gray-800 p-6 text-center shadow-xl">
-              <div className="mb-4 text-lg font-semibold text-white">Загрузка моделей...</div>
-              <div className="h-2 w-full rounded-full bg-gray-700">
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-white">
+            <div className="w-64 rounded-lg bg-white p-6 text-center shadow-xl">
+              <img src={logo} alt="STL Viewer" className="mx-auto mb-5 h-28 w-28 rounded object-contain" />
+              <div className="mb-4 text-lg font-semibold text-gray-800">Загрузка моделей...</div>
+              <div className="h-2 w-full rounded-full bg-gray-200">
                 <div
                   className="h-2 rounded-full bg-blue-500 transition-all duration-300"
-                  style={{ width: `${progress}%` }}
+                  style={{ width: `${loadingState.progress}%` }}
                 />
               </div>
-              <div className="mt-2 text-sm text-gray-300">{Math.round(progress)}%</div>
+              <div className="mt-2 text-sm text-gray-600">{Math.round(loadingState.progress)}%</div>
             </div>
           </div>
         )}
@@ -1121,16 +1370,18 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
           onCreated={({ gl }) => gl.setClearColor('#000000')}
           style={{ touchAction: 'none' }}
         >
+          <LoadWatcher onStateChange={setLoadingState} />
+
           <OrthographicCamera makeDefault position={[0, 0, 150]} zoom={2} />
           <CameraTracker cameraRef={cameraRef} />
 
           <ArcballControls
             ref={controlsRef}
             makeDefault
-            enabled
-            enablePan={true}
-            enableRotate
-            enableZoom
+            enabled={activeTool === 'none'}
+            enablePan={activeTool === 'none'}
+            enableRotate={activeTool === 'none'}
+            enableZoom={activeTool === 'none'}
             cursorZoom={false}
             enableAnimations={true}
             focusAnimationTime={0.1}
@@ -1141,9 +1392,14 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
           <directionalLight position={[-50, -50, -50]} intensity={0.5} />
 
           <Suspense fallback={null}>
-            {stlModels.map((model, index) => (
-              <STLMesh key={model.id} model={model} index={index} transparentGroupRefs={transparentGroupRefs} />
-            ))}
+            <group ref={modelsGroupRef}>
+              {stlModels.map((model, index) => (
+                <STLMesh key={model.id} model={model} index={index} transparentGroupRefs={transparentGroupRefs} />
+              ))}
+
+              {/* Нормализатор: центрирует группу моделей в (0,0,0) */}
+              <ModelNormalizer modelsGroupRef={modelsGroupRef} />
+            </group>
           </Suspense>
 
           <TransparencySorter transparentGroupRefs={transparentGroupRefs} cameraRef={cameraRef} />
@@ -1160,6 +1416,23 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
           <span className="text-xs text-gray-400 sm:text-sm">Doctor:</span>
           <span className="text-sm font-bold text-white">{project.doctor_display_name}</span>
         </div>
+
+        {localStorage.getItem('token') ? (
+          <button
+            onClick={handleLogout}
+            className="absolute left-3 top-4 z-30 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white shadow-lg transition hover:bg-red-500 sm:text-sm"
+            data-ui-control="true"
+          >
+            Выйти
+          </button>
+        ) : (
+          <div
+            className="absolute left-3 top-4 z-30 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-lg sm:text-sm"
+            data-ui-control="true"
+          >
+            Открытая сцена
+          </div>
+        )}
 
         <button
           onClick={() => setShowModelSettings((previous) => !previous)}
@@ -1246,20 +1519,29 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
           </div>
         )}
 
-        <div className="absolute bottom-6 left-1/2 z-20 -translate-x-1/2 px-3" data-ui-control="true">
-          <div className="inline-flex max-w-[calc(100vw-1.5rem)] flex-wrap items-center justify-center gap-2 rounded-2xl border border-gray-700 bg-gray-800 px-2 py-2 shadow-2xl">
+        {/* Панель инструментов */}
+        <div
+          className="absolute bottom-14 left-1/2 z-20 w-[calc(100vw-1rem)] -translate-x-1/2 overflow-hidden"
+          data-ui-control="true"
+        >
+          <div
+            className="mx-auto flex w-full flex-nowrap items-center justify-center gap-1 sm:w-max sm:max-w-full sm:gap-2"
+          >
             {tools.map((tool) => (
               <button
                 key={tool.id}
                 onClick={() => {
                   setActiveTool(tool.id === activeTool ? 'none' : (tool.id as ToolType));
                   setCurrentPoints([]);
+                  setCirclePreviewPoint(null);
+                  setEditableDrawingIndex(null);
                   setIsDrawingBrush(false);
                   activePointerIdRef.current = null;
+                  measurementDragRef.current = null;
                   gestureModeRef.current = 'none';
                 }}
                 className={[
-                  'group relative flex h-10 w-10 items-center justify-center rounded-xl text-lg transition-all sm:h-12 sm:w-12 sm:text-xl',
+                  'group relative flex h-7 w-7 flex-shrink items-center justify-center rounded-xl text-xs transition-all min-[380px]:h-9 min-[380px]:w-9 min-[380px]:text-base sm:h-12 sm:w-12 sm:flex-shrink-0 sm:text-xl',
                   activeTool === tool.id
                     ? 'scale-110 bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.5)]'
                     : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
@@ -1272,11 +1554,43 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
               </button>
             ))}
 
-            <div className="mx-1 h-8 w-px bg-gray-600 sm:mx-2" />
+            <button
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                void startAudioRecording();
+              }}
+              onPointerUp={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                stopAudioRecording();
+              }}
+              onPointerCancel={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                stopAudioRecording();
+              }}
+              onContextMenu={(event) => event.preventDefault()}
+              className={[
+                'group relative flex h-7 w-7 flex-shrink items-center justify-center rounded-xl text-xs transition-all min-[380px]:h-9 min-[380px]:w-9 min-[380px]:text-base sm:h-12 sm:w-12 sm:flex-shrink-0 sm:text-xl',
+                isRecordingAudio
+                  ? 'scale-110 bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.55)]'
+                  : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
+              ].join(' ')}
+              title="Hold to record audio note"
+            >
+              🎤
+              <span className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 transition group-hover:opacity-100">
+                Audio
+              </span>
+            </button>
+
+            <div className="mx-0 h-8 w-px flex-shrink-0 bg-gray-600 min-[380px]:mx-0.5 sm:mx-2" />
 
             <button
               onClick={handleUndoDraw}
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12"
+              className="flex h-7 w-7 flex-shrink items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 min-[380px]:h-9 min-[380px]:w-9 sm:h-12 sm:w-12 sm:flex-shrink-0"
               title="Undo"
             >
               ↶
@@ -1284,7 +1598,7 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
 
             <button
               onClick={handleClearAll}
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 sm:h-12 sm:w-12"
+              className="flex h-7 w-7 flex-shrink items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 min-[380px]:h-9 min-[380px]:w-9 sm:h-12 sm:w-12 sm:flex-shrink-0"
               title="Clear"
             >
               ✕
@@ -1292,7 +1606,7 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
 
             <button
               onClick={handleFinish}
-              className="h-10 rounded-xl bg-green-600 px-3 text-[10px] font-bold text-white hover:bg-green-500 sm:h-12 sm:px-4 sm:text-xs"
+              className="h-7 flex-shrink rounded-xl bg-green-600 px-1.5 text-[8px] font-bold text-white hover:bg-green-500 min-[380px]:h-9 min-[380px]:px-2.5 min-[380px]:text-[10px] sm:h-12 sm:flex-shrink-0 sm:px-4 sm:text-xs"
             >
               Save
             </button>
@@ -1306,6 +1620,8 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
             {activeTool !== 'text' && `Tool: ${tools.find((tool) => tool.id === activeTool)?.label}`}
           </div>
         )}
+
+        
 
         <svg ref={svgRef} className="pointer-events-none absolute inset-0 z-10 h-full w-full" style={{ touchAction: 'none' }}>
           {drawings.map((drawing, index) => {
@@ -1323,39 +1639,33 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
                   <text x={drawing.points[1].x + 10} y={drawing.points[1].y} fill="#3b82f6" fontSize="16" fontWeight="bold">
                     {drawing.value} mm
                   </text>
+                  {activeTool === 'ruler' &&
+                    editableDrawingIndex === index &&
+                    drawing.points.map((point, pointIndex) => (
+                      <circle
+                        key={`ruler-handle-${pointIndex}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={6}
+                        fill="#ffffff"
+                        stroke="#3b82f6"
+                        strokeWidth="2"
+                      />
+                    ))}
                 </g>
               );
             }
 
             if (drawing.type === 'circle') {
-              if (drawing.points.length < 3) return null;
-
-              const [point1, point2, point3] = drawing.points;
-              const determinant =
-                2 * (point1.x * (point2.y - point3.y) + point2.x * (point3.y - point1.y) + point3.x * (point1.y - point2.y));
-              if (Math.abs(determinant) < 1e-10) return null;
-
-              const point1Squared = point1.x * point1.x + point1.y * point1.y;
-              const point2Squared = point2.x * point2.x + point2.y * point2.y;
-              const point3Squared = point3.x * point3.x + point3.y * point3.y;
-              const centerX =
-                (point1Squared * (point2.y - point3.y) +
-                  point2Squared * (point3.y - point1.y) +
-                  point3Squared * (point1.y - point2.y)) /
-                determinant;
-              const centerY =
-                (point1Squared * (point3.x - point2.x) +
-                  point2Squared * (point1.x - point3.x) +
-                  point3Squared * (point2.x - point1.x)) /
-                determinant;
-              const radius = Math.hypot(point1.x - centerX, point1.y - centerY);
+              const circle = getCircleGeometry(drawing.points);
+              if (!circle) return null;
 
               return (
                 <g key={index}>
-                  <circle cx={centerX} cy={centerY} r={radius} stroke="#ef4444" strokeWidth="2" fill="none" />
+                  <circle cx={circle.centerX} cy={circle.centerY} r={circle.radius} stroke="#ef4444" strokeWidth="2" fill="none" />
                   <text
-                    x={centerX}
-                    y={centerY}
+                    x={circle.centerX}
+                    y={circle.centerY}
                     fill="#ef4444"
                     fontSize="16"
                     fontWeight="bold"
@@ -1364,6 +1674,19 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
                   >
                     Ø {drawing.value}
                   </text>
+                  {activeTool === 'circle' &&
+                    editableDrawingIndex === index &&
+                    drawing.points.map((point, pointIndex) => (
+                      <circle
+                        key={`circle-handle-${pointIndex}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={pointIndex === 2 ? 6 : 4}
+                        fill={pointIndex === 2 ? '#ffffff' : '#ef4444'}
+                        stroke="#ef4444"
+                        strokeWidth="2"
+                      />
+                    ))}
                 </g>
               );
             }
@@ -1402,6 +1725,19 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
                   <text x={drawing.points[1].x + 10} y={drawing.points[1].y - 10} fill="yellow" fontSize="16">
                     {drawing.value}°
                   </text>
+                  {activeTool === 'angle' &&
+                    editableDrawingIndex === index &&
+                    drawing.points.map((point, pointIndex) => (
+                      <circle
+                        key={`angle-handle-${pointIndex}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={6}
+                        fill="#ffffff"
+                        stroke="yellow"
+                        strokeWidth="2"
+                      />
+                    ))}
                 </g>
               );
             }
@@ -1461,6 +1797,42 @@ const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneSt
                   strokeDasharray="4 4"
                 />
               )}
+              {currentPoints.length === 2 && circlePreviewPoint && (() => {
+                const previewPoints = [...currentPoints, circlePreviewPoint];
+                const circle = getCircleGeometry(previewPoints);
+                const diameter = calculateCircleDiameter(previewPoints[0], previewPoints[1], previewPoints[2]);
+
+                if (!circle || diameter <= 0) {
+                  return (
+                    <circle
+                      cx={circlePreviewPoint.x}
+                      cy={circlePreviewPoint.y}
+                      r={4}
+                      fill="white"
+                      stroke="#ef4444"
+                      strokeWidth="2"
+                    />
+                  );
+                }
+
+                return (
+                  <g>
+                    <circle cx={circle.centerX} cy={circle.centerY} r={circle.radius} stroke="#ef4444" strokeWidth="2" fill="none" strokeDasharray="6 4" />
+                    <circle cx={circlePreviewPoint.x} cy={circlePreviewPoint.y} r={5} fill="white" stroke="#ef4444" strokeWidth="2" />
+                    <text
+                      x={circle.centerX}
+                      y={circle.centerY}
+                      fill="#ef4444"
+                      fontSize="16"
+                      fontWeight="bold"
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                    >
+                      Ø {Number(diameter.toFixed(1))}
+                    </text>
+                  </g>
+                );
+              })()}
             </>
           )}
 

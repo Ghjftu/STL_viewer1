@@ -8,6 +8,7 @@ const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const projectController_1 = require("../controllers/projectController");
+const projectController_2 = require("../controllers/projectController");
 const authMiddleware_1 = require("../middlewares/authMiddleware");
 const router = (0, express_1.Router)();
 const uploadDir = 'uploads/';
@@ -20,17 +21,28 @@ const storage = multer_1.default.diskStorage({
         cb(null, file.fieldname + '-' + uniqueSuffix + path_1.default.extname(file.originalname));
     }
 });
-const upload = (0, multer_1.default)({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = (0, multer_1.default)({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 // --- МАРШРУТЫ ---
-// 1. Создание и список — ТОЖЕ закроем, чтобы только админ/врач могли видеть
-router.post('/create', authMiddleware_1.authenticateToken, upload.array('files', 10), projectController_1.createProject);
-router.post('/:id/sketch', authMiddleware_1.authenticateToken, projectController_1.saveSketch);
-router.get('/list', authMiddleware_1.authenticateToken, projectController_1.getProjects);
-// 2. Получение проекта по ID (Самый важный для врача)
-router.get('/:id', authMiddleware_1.authenticateToken, (req, res) => {
-    console.log(`🔐 [AUTH OK] Юзер ${req.user?.userId} запрашивает проект ${req.params.id}`);
-    (0, projectController_1.getProjectById)(req, res);
+router.post('/create', authMiddleware_1.authenticateToken, upload.array('files', 10), projectController_2.createProject);
+router.post('/:id/sketch', authMiddleware_1.authenticateToken, projectController_2.saveSketch);
+router.get('/list', authMiddleware_1.authenticateToken, projectController_2.getProjects);
+// 1. ПОЛУЧЕНИЕ ПРОЕКТА
+router.get('/:id', authMiddleware_1.optionalAuthenticateToken, (req, res) => {
+    (0, projectController_2.getProjectById)(req, res);
 });
-// 3. Сохранение сцены
-router.put('/:id/scene', authMiddleware_1.authenticateToken, projectController_1.saveProjectScene);
+// GET /api/projects/:id/sketches
+router.get('/:id/sketches', projectController_1.getProjectSketches);
+// GET /api/projects/:id/sketches/:folder/svg
+router.get('/:id/sketches/:folder/svg', projectController_1.getSketchSvg);
+// 2. ОБНОВЛЕНИЕ ПРОЕКТА (Текстовые данные + Новые файлы)
+// Добавляем upload.array('files'), чтобы multer распарсил новые STL
+router.put('/:id', authMiddleware_1.authenticateToken, upload.array('files', 10), projectController_2.updateProject);
+// 3. УДАЛЕНИЕ КОНКРЕТНОГО ФАЙЛА ИЗ ПРОЕКТА
+router.post('/:id/delete-file', authMiddleware_1.authenticateToken, projectController_2.deleteFile);
+// 4. СОХРАНЕНИЕ СОСТОЯНИЯ СЦЕНЫ
+router.put('/:id/scene', authMiddleware_1.authenticateToken, projectController_2.saveProjectScene);
+// 5. ИМПОРТ ГОТОВЫХ ЭСКИЗОВ (.json + .svg)
+// Разрешаем загрузку до 50 файлов за раз. Поле называется 'sketchFiles', как мы указали во фронтенде!
+router.post('/:id/import-sketches', authMiddleware_1.authenticateToken, upload.array('sketchFiles', 50), projectController_2.importSketches);
+router.post('/sketches/:sketchId/read', projectController_1.markSketchAsRead);
 exports.default = router;

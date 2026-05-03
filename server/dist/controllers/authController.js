@@ -5,7 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.login = void 0;
 const db_1 = __importDefault(require("../config/db"));
-const bcrypt_1 = __importDefault(require("bcrypt"));
+//import bcrypt from 'bcrypt';
+const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const auth_1 = require("../utils/auth");
 const login = async (req, res) => {
     const { login, password } = req.body;
@@ -16,7 +17,7 @@ const login = async (req, res) => {
             return res.status(401).json({ message: 'Неверный логин или пароль' });
         }
         // Сравнение хеша пароля через bcrypt
-        const isMatch = await bcrypt_1.default.compare(password, user.password_hash);
+        const isMatch = await bcryptjs_1.default.compare(password, user.password_hash);
         if (!isMatch) {
             return res.status(401).json({ message: 'Неверный логин или пароль' });
         }

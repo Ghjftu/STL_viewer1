@@ -13,6 +13,7 @@ export const ProjectForm: React.FC = () => {
   const [doctors, setDoctors] = useState<any[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [fileGroups, setFileGroups] = useState<Record<string, string>>({}); // <--- НОВЫЙ СТЕЙТ
+  const [openScene, setOpenScene] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -113,6 +114,7 @@ export const ProjectForm: React.FC = () => {
 
     const data = new FormData();
     Object.entries(formData).forEach(([key, value]) => data.append(key, value));
+    data.append('open_scene', String(openScene));
 
     // Отправляем файлы с транслитерированными именами
     const filesToSend = getTransliteratedFiles(selectedFiles);
@@ -155,14 +157,14 @@ export const ProjectForm: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen p-10 bg-gray-50 text-black">
-      <div className="max-w-xl mx-auto bg-white p-8 rounded-xl shadow-lg border">
-        <h2 className="text-2xl font-bold mb-6 text-indigo-900 flex items-center gap-2">
+    <div className="min-h-screen bg-gray-50 p-4 text-black sm:p-6 lg:p-10">
+      <div className="mx-auto max-w-xl rounded-xl border bg-white p-4 shadow-lg sm:p-8">
+        <h2 className="mb-6 flex items-center gap-2 text-xl font-bold text-indigo-900 sm:text-2xl">
           <span className="bg-indigo-100 p-2 rounded-lg text-xl">📁</span> Новый проект
         </h2>
         <div className="flex flex-col gap-4">
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Страна</label>
               <input
@@ -183,7 +185,7 @@ export const ProjectForm: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Клиника</label>
               <input
@@ -230,14 +232,29 @@ export const ProjectForm: React.FC = () => {
             />
           </div>
 
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left">
+            <input
+              type="checkbox"
+              checked={openScene}
+              onChange={(e) => setOpenScene(e.target.checked)}
+              className="mt-1 h-5 w-5 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+            />
+            <span>
+              <span className="block text-sm font-bold text-amber-900">Открытая сцена</span>
+              <span className="block text-xs leading-5 text-amber-800">
+                Ссылка на просмотр будет открываться без пароля.
+              </span>
+            </span>
+          </label>
+
           {/* Блок загрузки файлов с выбором группы */}
-          <div className="border-2 border-dashed border-indigo-200 p-6 rounded-lg text-center bg-indigo-50 mt-2">
+          <div className="mt-2 rounded-lg border-2 border-dashed border-indigo-200 bg-indigo-50 p-4 text-center sm:p-6">
             <label className="block text-sm font-medium text-indigo-700 mb-2">Загрузите STL-файлы (до 10 шт)</label>
             <input
               type="file"
               multiple
               accept=".stl"
-              className="text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200"
+              className="w-full text-sm text-gray-500 file:mb-2 file:mr-4 file:rounded-full file:border-0 file:bg-indigo-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-indigo-700 hover:file:bg-indigo-200 sm:file:mb-0"
               onChange={handleFileChange} // <--- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
             />
             {/* Отображение файлов с селектами групп */}
@@ -246,10 +263,10 @@ export const ProjectForm: React.FC = () => {
                 <p className="text-sm font-semibold text-indigo-800 mb-2">Назначьте группы файлам:</p>
                 <ul className="text-xs text-gray-700 space-y-2 max-h-48 overflow-y-auto">
                   {Array.from(selectedFiles).map((file, idx) => (
-                    <li key={idx} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                      <span className="truncate w-1/2" title={file.name}>📄 {file.name}</span>
+                    <li key={idx} className="flex flex-col gap-2 rounded bg-gray-50 p-2 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="truncate sm:w-1/2" title={file.name}>📄 {file.name}</span>
                       <select 
-                        className="p-1 border rounded bg-white w-1/3"
+                        className="w-full rounded border bg-white p-2 sm:w-1/3 sm:p-1"
                         value={fileGroups[file.name] || 'Ткани'}
                         onChange={(e) => setFileGroups({...fileGroups, [file.name]: e.target.value})}
                       >
@@ -267,7 +284,7 @@ export const ProjectForm: React.FC = () => {
           <button
             onClick={handleCreate}
             disabled={loading}
-            className={`mt-4 p-4 rounded-lg font-bold shadow-md transition ${
+            className={`mt-4 rounded-lg p-4 font-bold shadow-md transition ${
               loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
             }`}
           >
