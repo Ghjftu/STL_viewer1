@@ -5,15 +5,30 @@ import { ProjectForm } from './components/Admin/ProjectForm';
 import { DoctorsPage } from './components/Admin/DoctorsPage';
 import { DoctorDashboard } from './components/Doctor/DoctorDashboard.tsx';
 import { Viewer3D } from './components/Viewer/Viewer3D';
+import { getSession } from './utils/authSession';
+import { useUiTheme } from './utils/uiTheme';
+
+const NotFoundPage = () => {
+  const { isDarkTheme, currentAccent } = useUiTheme();
+  return (
+    <div className={`flex min-h-screen items-center justify-center px-4 ${isDarkTheme ? 'bg-neutral-950 text-neutral-100' : 'bg-[#eef1f3] text-slate-950'}`}>
+      <div className={`rough-glass w-full max-w-sm rounded-[1.75rem] p-7 text-center ${isDarkTheme ? 'rough-glass-dark' : ''}`}>
+        <div className="text-5xl font-black" style={{ color: currentAccent.color }}>404</div>
+        <div className="mt-2 text-sm font-bold">Страница не найдена</div>
+      </div>
+    </div>
+  );
+};
 
 
 export default function App() {
   // Функция теперь используется для определения начального пути
   const getRedirectPath = () => {
-    const role = localStorage.getItem('role');
-    if (role === 'admin') return '/admin';
-    if (role === 'doctor') return '/doctor-dashboard';
-    return null; // Если роли нет, остаемся на странице логина
+    const session = getSession();
+    if (!session) return null;
+    if (session.role === 'admin') return '/admin';
+    if (session.role === 'doctor') return '/doctor-dashboard';
+    return null;
   };
 
   const redirectPath = getRedirectPath();
@@ -31,10 +46,7 @@ export default function App() {
             redirectPath ? (
               <Navigate to={redirectPath} replace />
             ) : (
-              <LoginPage onLoginSuccess={(role) => {
-                // После успешного логина обновляем страницу для срабатывания редиректа
-                window.location.href = role === 'admin' ? '/admin' : '/doctor-dashboard';
-              }} />
+              <LoginPage onLoginSuccess={() => undefined} />
             )
           } 
         />
@@ -52,7 +64,7 @@ export default function App() {
         <Route path="/viewer/:id" element={<Viewer3D />} />
 
         {/* 404 - Страница не найдена */}
-        <Route path="*" element={<div className="p-10 text-black">404 - Страница не найдена</div>} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </BrowserRouter>
   );

@@ -6,6 +6,17 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { SketchViewer } from './SketchViewer';
 import logo from '../../assets/logo.jpg';
+import {
+  clearSession,
+  getAuthHeaders,
+  getAuthToken,
+  getGuestSketchName,
+  getSession,
+  saveGuestSketchName,
+  setReturnUrl,
+} from '../../utils/authSession';
+import { useUiTheme } from '../../utils/uiTheme';
+import { MicrophoneIcon, SettingsIcon } from '../ui/AppIcons';
 
 type ToolType = 'none' | 'ruler' | 'angle' | 'circle' | 'brush' | 'text';
 type Point = { x: number; y: number };
@@ -62,7 +73,29 @@ const DEFAULT_ROTATION: Vector3Tuple = [0, 0, 0];
 const SCENE_SAVE_DELAY_MS = 350;
 const RULER_THICKNESS = 40;
 
+const VisibilityIcon: React.FC<{ visible: boolean }> = ({ visible }) => (
+  visible ? (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.75" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M3 3l18 18" />
+      <path d="M10.6 6.1A10 10 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.1 2.8M6.2 6.2C3.8 7.8 2.5 12 2.5 12s3.5 6 9.5 6c1.5 0 2.8-.4 4-1" />
+    </svg>
+  )
+);
+
 const getSceneStorageKey = (projectId: string) => `viewer3d:scene:${projectId}`;
+
+const getStoredSceneState = (projectId: string): SceneStateItem[] => {
+  try {
+    return parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
+  } catch {
+    return [];
+  }
+};
 
 const clampOpacity = (value: number) => Math.min(1, Math.max(0, value));
 
@@ -461,6 +494,7 @@ const Viewer3DScene: React.FC<{
   const [project, setProject] = useState<ProjectData | null>(null);
   const [stlModels, setStlModels] = useState<STLModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [accessError, setAccessError] = useState('');
   const [activeTool, setActiveTool] = useState<ToolType>('none');
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
@@ -474,6 +508,7 @@ const Viewer3DScene: React.FC<{
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [cameraParams, setCameraParams] = useState<CameraParams | null>(null);
   const [toastMessage, setToastMessage] = useState('');
+  const { currentAccent } = useUiTheme();
 
   // Состояние загрузки, обновляемое LoadWatcher'ом внутри Canvas
   const [loadingState, setLoadingState] = useState({ loading: true, progress: 0 });
@@ -503,11 +538,11 @@ const Viewer3DScene: React.FC<{
 
   const tools = useMemo(
     () => [
-      { id: 'ruler', icon: '📏', label: 'Ruler' },
-      { id: 'angle', icon: '∠', label: 'Angle' },
-      { id: 'circle', icon: '◯', label: 'Circle' },
-      { id: 'brush', icon: '✎', label: 'Brush' },
-      { id: 'text', icon: 'T', label: 'Text' },
+      { id: 'ruler', icon: '↔', label: 'Линейка' },
+      { id: 'angle', icon: '∠', label: 'Угол' },
+      { id: 'circle', icon: '○', label: 'Окружность' },
+      { id: 'brush', icon: '✎', label: 'Кисть' },
+      { id: 'text', icon: 'T', label: 'Текст' },
     ] as const,
     []
   );
@@ -516,23 +551,22 @@ const Viewer3DScene: React.FC<{
     (models: STLModel[]) => {
       try {
         localStorage.setItem(getSceneStorageKey(projectId), JSON.stringify(serializeSceneState(models)));
-      } catch {}
+      } catch {
+        // Local scene cache is best-effort; server sync still handles authenticated users.
+      }
     },
     [projectId]
   );
 
   const flushSceneStateToServer = useCallback(
     (models: STLModel[], keepalive = false) => {
-      const token = localStorage.getItem('token');
+      const token = getAuthToken();
       if (!token) return;
 
       void fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/scene`, {
         method: 'PUT',
         keepalive,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ sceneState: serializeSceneState(models) }),
       }).catch((err) => console.error("Ошибка сохранения:", err));
     },
@@ -716,25 +750,29 @@ const Viewer3DScene: React.FC<{
 
   useEffect(() => {
     setLoading(true);
-
-    const token = localStorage.getItem('token');
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
+    setAccessError('');
 
     fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
-      headers,
+      headers: getAuthHeaders(),
     })
       .then(async (response) => {
-        if (response.status === 401 || response.status === 403) {
-          if (token) localStorage.removeItem('token');
-          localStorage.setItem('returnUrl', currentPath);
+        if (response.status === 401) {
+          clearSession();
+          setReturnUrl(currentPath);
           navigate('/', { replace: true });
           throw new Error('Unauthorized');
+        }
+
+        if (response.status === 403) {
+          const error = await response.json().catch(() => ({}));
+          setAccessError(error.message || 'Доступ запрещен');
+          throw new Error('Forbidden');
+        }
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          setAccessError(error.message || 'Проект не найден');
+          throw new Error('Project load failed');
         }
 
         return (await response.json()) as ApiProjectResponse;
@@ -745,7 +783,7 @@ const Viewer3DScene: React.FC<{
         setProject(data.project);
 
         const serverSceneState = parseSceneState(data.project.scene_state);
-        const localSceneState = parseSceneState(localStorage.getItem(getSceneStorageKey(projectId)));
+        const localSceneState = getStoredSceneState(projectId);
         const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneState;
         const mergedModels = mergeModelsWithState(data.stlFiles ?? [], sceneState);
 
@@ -812,6 +850,11 @@ const Viewer3DScene: React.FC<{
     return () => observer.disconnect();
   }, []);
 
+  const handleLogin = () => {
+  setReturnUrl(currentPath);
+  navigate('/', { replace: true });
+};
+
   const updateModelProperty = (modelId: ModelId, field: 'color' | 'opacity', value: string | number) => {
     setStlModels((previousModels) => {
       const normalizedValue = field === 'opacity' ? clampOpacity(Number(value)) : String(value);
@@ -857,11 +900,8 @@ const Viewer3DScene: React.FC<{
   }, []);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('role');
-    localStorage.removeItem('name');
-    localStorage.removeItem('userId');
-    localStorage.setItem('returnUrl', currentPath);
+    clearSession();
+    setReturnUrl(currentPath);
     navigate('/', { replace: true });
   };
 
@@ -1013,10 +1053,26 @@ const Viewer3DScene: React.FC<{
       return;
     }
 
-    const token = localStorage.getItem('token');
-    if (!token) {
-      window.alert('Чтобы сохранить пометки, войдите в систему.');
-      return;
+    const session = getSession();
+    let guestName = '';
+
+    if (!session) {
+      if (!project?.is_public) {
+        window.alert('Чтобы сохранить пометки в закрытой сцене, войдите в систему.');
+        return;
+      }
+
+      guestName = getGuestSketchName();
+      if (!guestName) {
+        const enteredName = window.prompt('Как вас подписать под эскизом?');
+        if (enteredName === null) return;
+
+        guestName = saveGuestSketchName(enteredName);
+        if (!guestName) {
+          window.alert('Введите имя, которым подписать эскиз.');
+          return;
+        }
+      }
     }
 
     const rect = viewportRef.current?.getBoundingClientRect();
@@ -1038,15 +1094,13 @@ const Viewer3DScene: React.FC<{
       audioNotes,
       svgContent: svgRef.current ? svgRef.current.outerHTML : null,
       modelsState: serializeSceneState(stlModels),
+      guestName: session?.name || guestName,
     };
 
     try {
       const response = await fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketch`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload),
       });
 
@@ -1305,19 +1359,32 @@ const Viewer3DScene: React.FC<{
 
   if (loading) {
     return (
-      <div className="flex h-[100dvh] flex-col items-center justify-center bg-white text-gray-800">
-        <img src={logo} alt="STL Viewer" className="mb-5 h-28 w-28 rounded object-contain" />
-        <div className="text-sm font-semibold">Loading...</div>
+      <div className="flex h-[100dvh] flex-col items-center justify-center bg-neutral-950 text-neutral-200">
+        <img src={logo} alt="MeshBridge" className="mb-4 h-24 w-56 rounded-2xl bg-white object-contain ring-1 ring-white/10" />
+        <div className="h-1.5 w-56 overflow-hidden rounded-full bg-neutral-800">
+          <div className="scene-loading-bar h-full w-2/5 rounded-full" style={{ backgroundColor: currentAccent.color }} />
+        </div>
       </div>
     );
   }
 
   if (!project) {
-    return <div className="flex h-[100dvh] items-center justify-center bg-gray-900 text-red-500">Project not found</div>;
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center gap-4 bg-gray-900 p-6 text-center text-white">
+        <div className="text-lg font-bold text-red-400">{accessError || 'Project not found'}</div>
+        <button
+          onClick={handleLogin}
+          className="rounded-full px-5 py-2.5 text-sm font-black text-white shadow-lg hover:brightness-95"
+          style={{ backgroundColor: currentAccent.color }}
+        >
+          Войти другим аккаунтом
+        </button>
+      </div>
+    );
   }
 
   return (
-    <div className="flex h-[100dvh] overflow-hidden bg-gray-900 font-sans text-white" style={{ overscrollBehavior: 'none' }}>
+    <div className="flex h-[100dvh] overflow-hidden bg-neutral-950 font-sans text-white" style={{ overscrollBehavior: 'none', '--ui-accent': currentAccent.color } as React.CSSProperties}>
       <div
         ref={viewportRef}
         className="relative flex-1 items-center justify-center"
@@ -1335,12 +1402,12 @@ const Viewer3DScene: React.FC<{
         {(toastMessage || audioNotes.length > 0) && (
           <div className="pointer-events-none absolute right-4 top-16 z-40 flex flex-col items-end gap-2">
             {toastMessage && (
-              <div className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white shadow-lg">
+              <div className="rough-glass rough-glass-dark rounded-full px-4 py-2 text-sm font-bold text-white">
                 {toastMessage}
               </div>
             )}
             {audioNotes.length > 0 && (
-              <div className="rounded-lg border border-emerald-400/40 bg-emerald-600/90 px-4 py-2 text-sm font-bold text-white shadow-lg">
+              <div className="rough-glass rough-glass-dark rounded-full px-4 py-2 text-sm font-bold text-white">
                 Голосовых заметок: {audioNotes.length}
               </div>
             )}
@@ -1349,17 +1416,15 @@ const Viewer3DScene: React.FC<{
 
         {/* Полоса загрузки моделей */}
         {modelsLoading && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-white">
-            <div className="w-64 rounded-lg bg-white p-6 text-center shadow-xl">
-              <img src={logo} alt="STL Viewer" className="mx-auto mb-5 h-28 w-28 rounded object-contain" />
-              <div className="mb-4 text-lg font-semibold text-gray-800">Загрузка моделей...</div>
-              <div className="h-2 w-full rounded-full bg-gray-200">
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-neutral-950">
+            <div className="w-56 text-center">
+              <img src={logo} alt="MeshBridge" className="mb-4 h-24 w-56 rounded-2xl bg-white object-contain ring-1 ring-white/10" />
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-800">
                 <div
-                  className="h-2 rounded-full bg-blue-500 transition-all duration-300"
-                  style={{ width: `${loadingState.progress}%` }}
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{ width: `${loadingState.progress}%`, backgroundColor: currentAccent.color }}
                 />
               </div>
-              <div className="mt-2 text-sm text-gray-600">{Math.round(loadingState.progress)}%</div>
             </div>
           </div>
         )}
@@ -1407,49 +1472,56 @@ const Viewer3DScene: React.FC<{
         </Canvas>
 
         <div
-          className="absolute left-1/2 top-4 z-20 flex max-w-2xl -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-2xl border border-gray-600 bg-gray-800/90 px-4 py-2 text-white shadow-xl sm:rounded-full sm:px-6"
+          className="rough-glass rough-glass-dark absolute left-1/2 top-3 z-20 hidden max-w-[calc(100%-7rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-full px-4 py-2 text-white sm:flex"
           data-ui-control="true"
         >
-          <span className="text-xs text-gray-400 sm:text-sm">Patient:</span>
-          <span className="text-sm font-bold text-blue-400">{project.patient_name}</span>
-          <div className="hidden h-4 w-px bg-gray-600 sm:block" />
-          <span className="text-xs text-gray-400 sm:text-sm">Doctor:</span>
-          <span className="text-sm font-bold text-white">{project.doctor_display_name}</span>
+          <span className="text-xs text-neutral-400">Пациент</span>
+          <span className="max-w-40 truncate text-sm font-black" style={{ color: currentAccent.color }}>{project.patient_name}</span>
+          <div className="hidden h-4 w-px bg-white/15 sm:block" />
+          <span className="hidden text-xs text-neutral-400 sm:inline">Врач</span>
+          <span className="hidden max-w-40 truncate text-sm font-bold text-white sm:inline">{project.doctor_display_name}</span>
         </div>
 
-        {localStorage.getItem('token') ? (
-          <button
-            onClick={handleLogout}
-            className="absolute left-3 top-4 z-30 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white shadow-lg transition hover:bg-red-500 sm:text-sm"
-            data-ui-control="true"
-          >
-            Выйти
-          </button>
-        ) : (
-          <div
-            className="absolute left-3 top-4 z-30 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-lg sm:text-sm"
-            data-ui-control="true"
-          >
-            Открытая сцена
-          </div>
-        )}
+        {getSession() ? (
+  <button
+    onClick={handleLogout}
+    className="rough-glass rough-glass-dark absolute left-12 top-3 z-30 rounded-full px-3 py-2 text-xs font-black text-white transition hover:border-white/30"
+    data-ui-control="true"
+  >
+    Выйти
+  </button>
+) : (
+  <div
+    className="rough-glass rough-glass-dark absolute left-12 top-3 z-30 flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold text-white"
+    data-ui-control="true"
+  >
+    <span>Открытая сцена</span>
+    <button
+      onClick={handleLogin}
+      className="rounded-full px-2.5 py-1 text-xs font-black text-white"
+      style={{ backgroundColor: currentAccent.color }}
+    >
+      Войти
+    </button>
+  </div>
+)}
 
         <button
           onClick={() => setShowModelSettings((previous) => !previous)}
-          className="absolute right-4 top-4 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-gray-800 p-2 text-xl text-white shadow-lg hover:bg-gray-700"
-          title="Model settings"
+          className="rough-glass rough-glass-dark absolute right-3 top-3 z-30 flex h-10 w-10 items-center justify-center rounded-full text-lg text-white transition hover:border-white/30"
+          title="Настройки моделей"
         >
-          ⚙️
+          <SettingsIcon className="h-5 w-5" />
         </button>
 
         {showModelSettings && (
           <div
             ref={settingsPanelRef}
-            className="absolute right-4 top-20 z-30 max-h-[80vh] w-80 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 p-4 shadow-2xl"
+            className="rough-glass rough-glass-dark absolute right-3 top-16 z-30 flex max-h-[80vh] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-[1.5rem] p-4"
             data-ui-control="true"
           >
-            <h3 className="mb-3 border-b border-gray-600 pb-2 text-lg font-bold">Models</h3>
-            <div className="space-y-4">
+            <h3 className="mb-3 shrink-0 border-b border-white/10 pb-2 text-lg font-black">Модели</h3>
+            <div className="ui-dark-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-1">
               {Object.entries(
                 stlModels.reduce((acc, model) => {
                   acc[model.group] = acc[model.group] || [];
@@ -1461,30 +1533,34 @@ const Viewer3DScene: React.FC<{
 
                 return (
                   <div key={groupName} className="mb-4">
-                    <div className="flex justify-between items-center mb-2 bg-gray-700 p-2 rounded">
-                      <h4 className="font-bold text-indigo-300">{groupName}</h4>
+                    <div className="mb-2 flex items-center justify-between rounded-xl bg-white/7 p-2">
+                      <h4 className="font-black" style={{ color: currentAccent.color }}>{groupName}</h4>
                       <button
                         onClick={() => toggleGroupVisibility(groupName)}
-                        className="text-xl"
-                        title={isAnyVisible ? 'Hide group' : 'Show group'}
+                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
+                          isAnyVisible ? 'text-neutral-100 hover:bg-white/10' : 'text-neutral-500 hover:bg-white/6'
+                        }`}
+                        title={isAnyVisible ? 'Скрыть группу' : 'Показать группу'}
                       >
-                        {isAnyVisible ? '👁️' : '🚫'}
+                        <VisibilityIcon visible={isAnyVisible} />
                       </button>
                     </div>
 
-                    <div className="space-y-4 pl-2 border-l-2 border-gray-600">
+                    <div className="space-y-3 border-l-2 border-white/10 pl-2">
                       {groupModels.map((model) => (
-                        <div key={model.id} className="rounded-lg bg-gray-700 p-3">
+                        <div key={model.id} className="rounded-xl bg-black/20 p-3 ring-1 ring-white/8">
                           <div className="flex justify-between items-center mb-2">
                             <div className="truncate text-sm font-semibold text-white" title={model.name}>
                               {model.name}
                             </div>
                             <button
                               onClick={() => updateModelVisibility(model.id, !model.visible)}
-                              className="text-xl"
-                              title={model.visible ? 'Hide' : 'Show'}
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
+                                model.visible ? 'text-neutral-100 hover:bg-white/10' : 'text-neutral-500 hover:bg-white/6'
+                              }`}
+                              title={model.visible ? 'Скрыть объект' : 'Показать объект'}
                             >
-                              {model.visible ? '👁️' : '🚫'}
+                              <VisibilityIcon visible={model.visible} />
                             </button>
                           </div>
                           <div className="mb-2 flex items-center gap-3">
@@ -1505,7 +1581,8 @@ const Viewer3DScene: React.FC<{
                               step="0.1"
                               value={model.opacity}
                               onChange={(event) => updateModelProperty(model.id, 'opacity', Number(event.target.value))}
-                              className="flex-1 accent-blue-500"
+                              className="flex-1"
+                              style={{ accentColor: currentAccent.color }}
                             />
                             <span className="w-8 text-xs text-gray-300">{Math.round(model.opacity * 100)}%</span>
                           </div>
@@ -1521,12 +1598,13 @@ const Viewer3DScene: React.FC<{
 
         {/* Панель инструментов */}
         <div
-          className="absolute bottom-14 left-1/2 z-20 w-[calc(100vw-1rem)] -translate-x-1/2 overflow-hidden"
+          className="absolute bottom-12 left-1/2 z-20 w-[calc(100vw-1rem)] -translate-x-1/2"
           data-ui-control="true"
         >
           <div
-            className="mx-auto flex w-full flex-nowrap items-center justify-center gap-1 sm:w-max sm:max-w-full sm:gap-2"
+            className="rough-glass rough-glass-dark liquid-toolbar-dark mx-auto flex w-max max-w-full items-center gap-1.5 rounded-full p-1.5"
           >
+            <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {tools.map((tool) => (
               <button
                 key={tool.id}
@@ -1540,17 +1618,15 @@ const Viewer3DScene: React.FC<{
                   measurementDragRef.current = null;
                   gestureModeRef.current = 'none';
                 }}
-                className={[
-                  'group relative flex h-7 w-7 flex-shrink items-center justify-center rounded-xl text-xs transition-all min-[380px]:h-9 min-[380px]:w-9 min-[380px]:text-base sm:h-12 sm:w-12 sm:flex-shrink-0 sm:text-xl',
+                className={`flex h-10 w-10 flex-none items-center justify-center rounded-full text-base font-black ring-1 transition sm:h-11 sm:w-11 ${
                   activeTool === tool.id
-                    ? 'scale-110 bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.5)]'
-                    : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
-                ].join(' ')}
+                    ? 'text-white ring-transparent'
+                    : 'bg-white/6 text-neutral-200 ring-transparent hover:bg-white/10 hover:ring-white/25'
+                }`}
+                style={activeTool === tool.id ? { backgroundColor: currentAccent.color } : undefined}
+                title={tool.label}
               >
                 {tool.icon}
-                <span className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 transition group-hover:opacity-100">
-                  {tool.label}
-                </span>
               </button>
             ))}
 
@@ -1572,51 +1648,47 @@ const Viewer3DScene: React.FC<{
                 stopAudioRecording();
               }}
               onContextMenu={(event) => event.preventDefault()}
-              className={[
-                'group relative flex h-7 w-7 flex-shrink items-center justify-center rounded-xl text-xs transition-all min-[380px]:h-9 min-[380px]:w-9 min-[380px]:text-base sm:h-12 sm:w-12 sm:flex-shrink-0 sm:text-xl',
-                isRecordingAudio
-                  ? 'scale-110 bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.55)]'
-                  : 'bg-gray-700 text-gray-300 hover:scale-105 hover:bg-gray-600',
-              ].join(' ')}
-              title="Hold to record audio note"
+              className={`flex h-10 w-10 flex-none items-center justify-center rounded-full text-base ring-1 transition sm:h-11 sm:w-11 ${
+                isRecordingAudio ? 'bg-red-600 text-white ring-transparent' : 'bg-white/6 text-neutral-200 ring-transparent hover:bg-white/10 hover:ring-white/25'
+              }`}
+              title="Удерживайте для записи аудио"
             >
-              🎤
-              <span className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 transition group-hover:opacity-100">
-                Audio
-              </span>
+              <MicrophoneIcon className="h-5 w-5" />
             </button>
 
-            <div className="mx-0 h-8 w-px flex-shrink-0 bg-gray-600 min-[380px]:mx-0.5 sm:mx-2" />
+            <div className="mx-0.5 h-7 w-px flex-none bg-white/15" />
 
             <button
               onClick={handleUndoDraw}
-              className="flex h-7 w-7 flex-shrink items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 min-[380px]:h-9 min-[380px]:w-9 sm:h-12 sm:w-12 sm:flex-shrink-0"
-              title="Undo"
+              className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-white/6 text-neutral-200 ring-1 ring-transparent transition hover:bg-white/10 hover:ring-white/25 sm:h-11 sm:w-11"
+              title="Отменить"
             >
               ↶
             </button>
 
             <button
               onClick={handleClearAll}
-              className="flex h-7 w-7 flex-shrink items-center justify-center rounded-xl bg-red-900/50 text-red-400 transition hover:bg-red-800/50 min-[380px]:h-9 min-[380px]:w-9 sm:h-12 sm:w-12 sm:flex-shrink-0"
-              title="Clear"
+              className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-red-500/12 text-red-300 ring-1 ring-transparent transition hover:bg-red-500/20 hover:ring-red-400/30 sm:h-11 sm:w-11"
+              title="Очистить"
             >
               ✕
             </button>
+            </div>
 
             <button
               onClick={handleFinish}
-              className="h-7 flex-shrink rounded-xl bg-green-600 px-1.5 text-[8px] font-bold text-white hover:bg-green-500 min-[380px]:h-9 min-[380px]:px-2.5 min-[380px]:text-[10px] sm:h-12 sm:flex-shrink-0 sm:px-4 sm:text-xs"
+              className="h-10 flex-none rounded-full px-4 text-xs font-black text-white shadow-md transition hover:brightness-95 sm:h-11"
+              style={{ backgroundColor: currentAccent.color }}
             >
-              Save
+              Сохранить
             </button>
           </div>
         </div>
 
         {activeTool !== 'none' && (
-          <div className="pointer-events-none absolute left-1/2 top-20 z-20 w-[90%] -translate-x-1/2 animate-pulse rounded border border-blue-500/50 bg-blue-600/20 px-4 py-1 text-center text-[10px] font-bold text-blue-200 sm:top-24 sm:w-auto sm:text-xs">
-            {activeTool === 'text' && currentPoints.length === 0 && 'Tap point 1 for the note anchor'}
-            {activeTool === 'text' && currentPoints.length === 1 && 'Tap point 2 for the text label'}
+          <div className="rough-glass rough-glass-dark pointer-events-none absolute left-1/2 top-16 z-20 w-[90%] -translate-x-1/2 rounded-full px-4 py-1.5 text-center text-[10px] font-bold text-neutral-200 sm:w-auto sm:text-xs">
+            {activeTool === 'text' && currentPoints.length === 0 && 'Поставьте точку указателя аннотации.'}
+            {activeTool === 'text' && currentPoints.length === 1 && 'Поствте точку нумерации аннотации.'}
             {activeTool !== 'text' && `Tool: ${tools.find((tool) => tool.id === activeTool)?.label}`}
           </div>
         )}

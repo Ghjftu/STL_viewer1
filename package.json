@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "lucide-react": "^1.21.0",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

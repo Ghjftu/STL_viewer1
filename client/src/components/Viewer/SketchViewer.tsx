@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
 import { OrthographicCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { clearSession, getAuthHeaders, getAuthToken } from '../../utils/authSession';
+import { useUiTheme } from '../../utils/uiTheme';
 
 // ========== Типы ==========
 type Vector3Tuple = [number, number, number];
@@ -47,6 +49,9 @@ interface SketchItem {
   id: string | number;
   folderNumber: number;
   createdAt: string;
+  authorUserId?: string | null;
+  authorName?: string | null;
+  authorRole?: 'admin' | 'doctor' | 'guest' | null;
   is_read?: boolean;                   // <-- добавили поле
   cameraState?: {
     position?: Vector3Tuple;
@@ -65,6 +70,13 @@ interface SketchItem {
 const DEFAULT_MODEL_COLOR = '#cccccc';
 const DEFAULT_POSITION: Vector3Tuple = [0, 0, 0];
 const DEFAULT_ROTATION: Vector3Tuple = [0, 0, 0];
+
+const getAuthorRoleLabel = (role: SketchItem['authorRole']): string => {
+  if (role === 'admin') return 'Администратор';
+  if (role === 'doctor') return 'Врач';
+  if (role === 'guest') return 'Гость';
+  return '';
+};
 
 const clampOpacity = (value: number) => Math.min(1, Math.max(0, value));
 
@@ -267,7 +279,9 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   const [currentSketchIndex, setCurrentSketchIndex] = useState(0);
   const [svgContent, setSvgContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [accessError, setAccessError] = useState('');
   const [viewerSize, setViewerSize] = useState({ width: 0, height: 0 });
+  const { currentAccent } = useUiTheme();
 
   // Состояние и рефы для панорамирования/масштабирования
   const [viewState, setViewState] = useState({ scale: 1, x: 0, y: 0 });
@@ -365,53 +379,22 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   }, []);
 
   // --- Функция отправки статуса "прочитано" на сервер ---
-  const markAsRead = async (sketchId: string | number) => {
+  const markAsRead = useCallback(async (sketchId: string | number) => {
+    if (!getAuthToken()) return;
+
     try {
       await fetch(`${import.meta.env.VITE_API_URL}/projects/sketches/${sketchId}/read`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        headers: getAuthHeaders(false)
       });
     } catch (err) {
       console.error("Не удалось отметить как прочитанное", err);
     }
-  };
+  }, []);
 
-  // Загрузка данных
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) return;
-
-    Promise.all([
-      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }).then((res) => res.json()),
-      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }).then((res) => res.json()),
-    ])
-      .then(([projectData, sketchesData]) => {
-        setProject(projectData.project);
-        setProjectModels(projectData.stlFiles || []);
-        setProjectSceneState(parseSceneState(projectData?.project?.scene_state));
-
-        // Приводим sketches к нужному формату, добавляем is_read (по умолчанию false)
-        const sketchesArray = (Array.isArray(sketchesData) ? sketchesData : []).map((s: any) => ({
-          ...s,
-          is_read: s.is_read || false,
-        }));
-        setSketches(sketchesArray);
-        if (sketchesArray.length > 0) {
-          loadSketchSvg(sketchesArray[0].folderNumber);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [projectId]);
-
-  const loadSketchSvg = (folderNumber: number) => {
-    const token = localStorage.getItem('token');
+  const loadSketchSvg = useCallback((folderNumber: number) => {
     fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches/${folderNumber}/svg`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: getAuthHeaders(false),
     })
       .then((res) => res.text())
       .then((svg) => {
@@ -435,7 +418,71 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
         }
       })
       .catch(console.error);
-  };
+  }, [projectId]);
+
+  // Загрузка данных
+  useEffect(() => {
+    const readJson = async (response: Response) => {
+      if (response.status === 401) {
+        throw new Error('AUTH_REQUIRED');
+      }
+      if (response.status === 403) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || 'Доступ запрещен');
+      }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || 'Ошибка загрузки');
+      }
+
+      return response.json();
+    };
+
+    Promise.all([
+      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}`, {
+        headers: getAuthHeaders(false),
+      }).then(readJson),
+      fetch(`${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches`, {
+        headers: getAuthHeaders(false),
+      }).then(readJson),
+    ])
+      .then(([projectData, sketchesData]) => {
+        setAccessError('');
+        setProject(projectData.project);
+        setProjectModels(projectData.stlFiles || []);
+        setProjectSceneState(parseSceneState(projectData?.project?.scene_state));
+
+        // Приводим sketches к нужному формату, добавляем is_read (по умолчанию false)
+        const sketchesArray = (Array.isArray(sketchesData) ? sketchesData : []).map((s: any) => ({
+          ...s,
+          is_read: s.is_read || false,
+        }));
+        setSketches(sketchesArray);
+        if (sketchesArray.length > 0) {
+          const firstSketch = sketchesArray[0];
+          loadSketchSvg(firstSketch.folderNumber);
+
+          if (!firstSketch.is_read) {
+            markAsRead(firstSketch.id);
+            setSketches((previous) =>
+              previous.map((sketch) => (
+                sketch.id === firstSketch.id ? { ...sketch, is_read: true } : sketch
+              ))
+            );
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.message === 'AUTH_REQUIRED') {
+          clearSession();
+          setAccessError('Для просмотра эскизов требуется вход');
+          return;
+        }
+
+        setAccessError(error.message || 'Ошибка загрузки эскизов');
+      })
+      .finally(() => setLoading(false));
+  }, [loadSketchSvg, markAsRead, projectId]);
 
   // --- Новый обработчик выбора скетча ---
   const handleSketchSelect = (sketch: SketchItem) => {
@@ -463,7 +510,13 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
     const rawSketchState = currentSketch?.modelsState || (currentSketch as any)?.models_state;
     const sketchSceneState = parseSceneState(rawSketchState);
     const fallbackProjectState = parseSceneState(projectSceneState);
-    const localStateRaw = localStorage.getItem(`viewer3d:scene:${projectId}`);
+    const localStateRaw = (() => {
+      try {
+        return localStorage.getItem(`viewer3d:scene:${projectId}`);
+      } catch {
+        return null;
+      }
+    })();
     const localSceneState = parseSceneState(localStateRaw);
 
     const stateToUse =
@@ -500,12 +553,11 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   // Скачивание
   const downloadSvg = async (folderNumber: number) => {
-    const token = localStorage.getItem('token');
     try {
       const response = await fetch(
         `${import.meta.env.VITE_API_URL}/projects/${projectId}/sketches/${folderNumber}/svg`,
         {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: getAuthHeaders(false),
         }
       );
       const svgText = await response.text();
@@ -538,7 +590,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   if (loading) {
     return (
-      <div className="flex h-[100dvh] items-center justify-center bg-gray-900 p-4 text-center text-white">
+      <div className="flex h-[100dvh] items-center justify-center bg-neutral-950 p-4 text-center font-bold text-white" style={{ color: currentAccent.color }}>
         Загрузка эскизов...
       </div>
     );
@@ -546,8 +598,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
   if (!project || sketches.length === 0 || !currentSketch) {
     return (
-      <div className="flex h-[100dvh] items-center justify-center bg-gray-900 p-4 text-center text-red-500">
-        Нет сохранённых эскизов
+      <div className="flex h-[100dvh] items-center justify-center bg-neutral-950 p-4 text-center text-red-400">
+        {accessError || 'Нет сохранённых эскизов'}
       </div>
     );
   }
@@ -564,22 +616,29 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
   });
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden bg-gray-900 text-white lg:flex-row">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-neutral-950 text-white lg:flex-row" style={{ '--ui-accent': currentAccent.color } as React.CSSProperties}>
       {/* Левая панель: список эскизов с бейджами NEW */}
-      <div className="flex max-h-44 shrink-0 flex-col overflow-hidden border-b border-gray-700 bg-gray-800 p-3 lg:max-h-none lg:w-80 lg:border-b-0 lg:border-r lg:p-4">
-        <h2 className="mb-3 text-lg font-bold lg:mb-4 lg:text-xl">Эскизы проекта</h2>
-        <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-x-visible lg:overflow-y-auto lg:pb-0">
-          {sketches.map((sketch) => (
-            <div key={sketch.id} className="flex min-w-[13rem] items-center lg:min-w-0">
+      <div className="rough-glass rough-glass-dark flex max-h-44 shrink-0 flex-col overflow-hidden rounded-none border-x-0 border-t-0 p-3 lg:max-h-none lg:w-72 lg:border-b-0 lg:border-l-0 lg:border-r lg:p-4">
+        <h2 className="mb-3 text-lg font-black lg:mb-4" style={{ color: currentAccent.color }}>Эскизы проекта</h2>
+        <div className="ui-dark-scrollbar flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-x-visible lg:overflow-y-auto lg:pb-0">
+          {sketches.map((sketch) => {
+            const isSelected = sketch.id === currentSketch?.id;
+            return (
+            <div key={sketch.id} className="flex min-w-[13rem] items-center gap-1.5 lg:min-w-0">
               <button
                 onClick={() => handleSketchSelect(sketch)}
-                className={`relative flex-1 rounded-lg p-3 text-left transition ${
-                  sketch.id === currentSketch?.id
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 hover:bg-gray-600'
+                className={`relative flex-1 rounded-2xl p-3 text-left ring-1 transition ${
+                  isSelected
+                    ? 'text-white ring-transparent'
+                    : 'bg-white/6 text-neutral-200 ring-white/8 hover:bg-white/10 hover:ring-white/20'
                 }`}
+                style={isSelected ? { backgroundColor: currentAccent.color } : undefined}
               >
-                <div className="font-bold">Эскиз #{sketch.folderNumber}</div>
+                <div className="font-black">Эскиз #{sketch.folderNumber}</div>
+                <div className="mt-1 truncate text-xs font-bold" title={sketch.authorName || 'Автор не указан'}>
+                  {sketch.authorName || 'Автор не указан'}
+                  {getAuthorRoleLabel(sketch.authorRole) ? ` · ${getAuthorRoleLabel(sketch.authorRole)}` : ''}
+                </div>
                 <div className="text-xs opacity-75">
                   {new Date(sketch.createdAt).toLocaleString()}
                 </div>
@@ -593,13 +652,13 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                   </div>
                 )}
               </button>
-              <div className="ml-2 flex flex-col space-y-1">
+              <div className="flex flex-col gap-1">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     downloadSvg(sketch.folderNumber);
                   }}
-                  className="p-1 bg-gray-600 hover:bg-gray-500 rounded text-xs"
+                  className="rounded-full bg-white/8 px-2 py-1 text-[10px] font-black text-neutral-300 ring-1 ring-transparent hover:bg-white/12 hover:ring-white/20"
                   title="Скачать SVG"
                 >
                   SVG
@@ -609,14 +668,14 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                     e.stopPropagation();
                     downloadJson(sketch);
                   }}
-                  className="p-1 bg-gray-600 hover:bg-gray-500 rounded text-xs"
+                  className="rounded-full bg-white/8 px-2 py-1 text-[10px] font-black text-neutral-300 ring-1 ring-transparent hover:bg-white/12 hover:ring-white/20"
                   title="Скачать JSON"
                 >
                   JSON
                 </button>
               </div>
             </div>
-          ))}
+          );})}
         </div>
       </div>
 
@@ -673,8 +732,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
 
                   return (
                     <g key={index}>
-                      <line x1={pointA.x} y1={pointA.y} x2={pointB.x} y2={pointB.y} stroke="#3b82f6" strokeWidth="2" />
-                      <text x={pointB.x + 10} y={pointB.y} fill="#3b82f6" fontSize="16" fontWeight="bold">
+                      <line x1={pointA.x} y1={pointA.y} x2={pointB.x} y2={pointB.y} stroke={currentAccent.color} strokeWidth="2" />
+                      <text x={pointB.x + 10} y={pointB.y} fill={currentAccent.color} fontSize="16" fontWeight="bold">
                         {drawing.value} mm
                       </text>
                     </g>
@@ -788,8 +847,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
       </div>
 
       {/* Правая панель: комментарии врача */}
-      <div className="max-h-52 shrink-0 overflow-y-auto border-t border-gray-700 bg-gray-800 p-3 lg:max-h-none lg:w-80 lg:border-l lg:border-t-0 lg:p-4">
-        <h3 className="mb-3 flex items-center text-base font-semibold text-blue-400 lg:mb-4 lg:text-lg">
+      <div className="rough-glass rough-glass-dark flex max-h-52 min-h-0 shrink-0 flex-col overflow-hidden rounded-none border-x-0 border-b-0 p-3 lg:max-h-none lg:w-72 lg:border-l lg:border-r-0 lg:border-t-0 lg:p-4">
+        <h3 className="mb-3 flex shrink-0 items-center text-base font-black lg:mb-4" style={{ color: currentAccent.color }}>
           <svg
             className="w-5 h-5 mr-2"
             fill="none"
@@ -806,15 +865,15 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
           Комментарии врача
         </h3>
 
-        <div className="space-y-3 lg:space-y-4">
+        <div className="ui-dark-scrollbar min-h-0 flex-1 touch-pan-y space-y-3 overflow-y-auto overscroll-contain pr-1 lg:space-y-4">
           {(currentSketch.textNotes && currentSketch.textNotes.length > 0) || currentAudioNotes.length > 0 ? (
             <>
               {currentSketch.textNotes?.map((note) => (
                 <div
                   key={`text-${note.id}`}
-                  className="bg-gray-750 flex items-start space-x-3 rounded-xl border border-gray-700 p-3 shadow-md transition-colors hover:border-blue-500/50"
+                  className="flex items-start space-x-3 rounded-2xl border border-white/8 bg-black/18 p-3 shadow-md transition hover:border-white/20"
                 >
-                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-medium text-white">
+                  <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-sm font-black text-white" style={{ backgroundColor: currentAccent.color }}>
                     {note.id}
                   </div>
                   <div className="flex-1">
@@ -828,7 +887,7 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
               {currentAudioNotes.map((note: AudioNote) => (
                 <div
                   key={`audio-${note.id}`}
-                  className="bg-gray-750 flex items-start space-x-3 rounded-xl border border-emerald-700/60 p-3 shadow-md transition-colors hover:border-emerald-500/80"
+                  className="flex items-start space-x-3 rounded-2xl border border-white/8 bg-black/18 p-3 shadow-md transition hover:border-white/20"
                 >
                   <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-medium text-white shadow-[0_0_12px_rgba(16,185,129,0.35)]">
                     🎤
@@ -840,8 +899,8 @@ export const SketchViewer: React.FC<{ projectId: string }> = ({ projectId }) => 
                         {note.createdAt ? new Date(note.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                       </div>
                     </div>
-                    <div className="rounded-lg border border-gray-700 bg-gray-900/70 p-2">
-                      <audio controls className="h-9 w-full accent-emerald-500" src={note.dataUrl}>
+                    <div className="rounded-xl border border-white/8 bg-black/30 p-2">
+                      <audio controls className="h-9 w-full" style={{ accentColor: currentAccent.color }} src={note.dataUrl}>
                         Ваш браузер не поддерживает аудио.
                       </audio>
                     </div>

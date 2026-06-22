@@ -1,1 +1,123 @@
 @import "tailwindcss";
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  letter-spacing: 0;
+}
+
+.rough-glass {
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 0.5);
+  background-color: rgb(255 255 255 / 0.38);
+  background-image:
+    radial-gradient(circle, rgb(255 255 255 / 0.24) 0.6px, transparent 0.8px),
+    radial-gradient(circle, rgb(15 23 42 / 0.08) 0.5px, transparent 0.8px);
+  background-position: 0 0, 4px 5px;
+  background-size: 8px 8px, 11px 11px;
+  box-shadow: 0 16px 38px rgb(15 23 42 / 0.16);
+  backdrop-filter: blur(28px) saturate(135%);
+  -webkit-backdrop-filter: blur(28px) saturate(135%);
+}
+
+.rough-glass-dark {
+  border-color: rgb(255 255 255 / 0.12);
+  background-color: rgb(23 23 23 / 0.52);
+  background-image:
+    radial-gradient(circle, rgb(255 255 255 / 0.1) 0.6px, transparent 0.8px),
+    radial-gradient(circle, rgb(0 0 0 / 0.2) 0.5px, transparent 0.8px);
+  box-shadow: 0 16px 38px rgb(0 0 0 / 0.3);
+}
+
+.liquid-nav {
+  border-color: rgb(255 255 255 / 0.82);
+  background-color: rgb(255 255 255 / 0.76);
+  box-shadow: 0 18px 42px rgb(15 23 42 / 0.2), inset 0 1px 0 rgb(255 255 255 / 0.78);
+  backdrop-filter: blur(38px) saturate(165%);
+  -webkit-backdrop-filter: blur(38px) saturate(165%);
+}
+
+.liquid-nav-dark,
+.liquid-toolbar-dark {
+  border-color: rgb(255 255 255 / 0.2);
+  background-color: rgb(20 20 22 / 0.8);
+  box-shadow: 0 18px 44px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.12);
+  backdrop-filter: blur(38px) saturate(155%);
+  -webkit-backdrop-filter: blur(38px) saturate(155%);
+}
+
+.ui-focus:focus {
+  border-color: var(--ui-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-accent) 18%, transparent);
+  outline: none;
+}
+
+@keyframes quick-glass-notice {
+  0% {
+    opacity: 0;
+    scale: 0.96;
+  }
+  12%,
+  72% {
+    opacity: 1;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 0.98;
+  }
+}
+
+.quick-glass-notice {
+  animation: quick-glass-notice 1.7s ease both;
+}
+
+@keyframes scene-loading-bar {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.scene-loading-bar {
+  animation: scene-loading-bar 1.2s ease-in-out infinite;
+}
+
+.ui-dark-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.2) transparent;
+}
+
+.ui-dark-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.ui-dark-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ui-dark-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.2);
+}
+
+.ui-dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.34);
+}

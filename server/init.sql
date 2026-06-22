@@ -42,6 +42,22 @@ CREATE TABLE IF NOT EXISTS projects (
 
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
 
+CREATE TABLE IF NOT EXISTS project_folders (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS project_folder_assignments (
+    project_id UUID PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    folder_id TEXT NOT NULL REFERENCES project_folders(id) ON DELETE CASCADE,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+DELETE FROM project_folder_assignments WHERE folder_id IN ('review', 'surgery');
+DELETE FROM project_folders WHERE id IN ('review', 'surgery') OR LOWER(name) IN ('на проверке', 'хирургия');
+
 -- 4. Элементы 3D сцены (STL файлы)
 CREATE TABLE IF NOT EXISTS scene_elements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,6 +74,9 @@ CREATE TABLE IF NOT EXISTS scene_elements (
 CREATE TABLE IF NOT EXISTS sketches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    author_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    author_name TEXT,
+    author_role TEXT CHECK (author_role IN ('admin', 'doctor', 'guest')),
     camera_state JSONB NOT NULL,
     canvas_data JSONB NOT NULL,
     text_notes JSONB DEFAULT '[]',       -- Массив текстовых заметок
@@ -70,6 +89,9 @@ CREATE TABLE IF NOT EXISTS sketches (
 );
 
 ALTER TABLE sketches ADD COLUMN IF NOT EXISTS audio_notes JSONB DEFAULT '[]';
+ALTER TABLE sketches ADD COLUMN IF NOT EXISTS author_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE sketches ADD COLUMN IF NOT EXISTS author_name TEXT;
+ALTER TABLE sketches ADD COLUMN IF NOT EXISTS author_role TEXT;
 
 -- 6. Техническое задание (Финальный документ)
 CREATE TABLE IF NOT EXISTS technical_tasks (

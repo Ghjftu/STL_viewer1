@@ -3,12 +3,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.importSketches = exports.getSketchSvg = exports.getProjectSketches = exports.saveSketch = exports.saveProjectScene = exports.getProjectById = exports.markSketchAsRead = exports.getProjects = exports.createProject = exports.deleteFile = exports.updateProject = void 0;
+exports.importSketches = exports.getSketchSvg = exports.getProjectSketches = exports.saveSketch = exports.saveProjectScene = exports.getProjectById = exports.markSketchAsRead = exports.saveProjectFolders = exports.getProjectFolders = exports.getProjects = exports.createProject = exports.deleteFile = exports.updateProject = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const crypto_1 = require("crypto");
 const fileSystem_1 = require("../utils/fileSystem");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+const REMOVED_PROJECT_FOLDER_IDS = new Set(['review', 'surgery']);
+const REMOVED_PROJECT_FOLDER_NAMES = new Set(['на проверке', 'хирургия']);
 // Вспомогательная функция для безопасного получения строкового параметра
 const getParamAsString = (param) => {
     if (Array.isArray(param))
@@ -38,6 +40,45 @@ const parseFileGroups = (rawValue) => {
 const parseBooleanFormValue = (value) => {
     return value === true || value === 'true' || value === '1' || value === 'on';
 };
+const isValidFolderId = (value) => {
+    return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(value);
+};
+const normalizeProjectFoldersPayload = (value) => {
+    if (!Array.isArray(value))
+        return [];
+    const seenIds = new Set();
+    return value.reduce((folders, item) => {
+        if (!item || typeof item !== 'object')
+            return folders;
+        const folder = item;
+        const id = typeof folder.id === 'string' ? folder.id.trim() : '';
+        const name = typeof folder.name === 'string' ? folder.name.trim() : '';
+        const normalizedName = name.toLocaleLowerCase('ru-RU');
+        if (!isValidFolderId(id) ||
+            !name ||
+            seenIds.has(id) ||
+            REMOVED_PROJECT_FOLDER_IDS.has(id) ||
+            REMOVED_PROJECT_FOLDER_NAMES.has(normalizedName)) {
+            return folders;
+        }
+        seenIds.add(id);
+        folders.push({ id, name: name.slice(0, 80) });
+        return folders;
+    }, []);
+};
+const normalizeFolderAssignmentsPayload = (value, availableFolderIds) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return {};
+    return Object.entries(value).reduce((assignments, [projectId, folderId]) => {
+        if (typeof folderId !== 'string' || !availableFolderIds.has(folderId))
+            return assignments;
+        const normalizedProjectId = normalizeOptionalUuid(projectId);
+        if (!normalizedProjectId)
+            return assignments;
+        assignments[normalizedProjectId] = folderId;
+        return assignments;
+    }, {});
+};
 const normalizeOptionalUuid = (value) => {
     if (typeof value !== 'string')
         return null;
@@ -47,6 +88,47 @@ const normalizeOptionalUuid = (value) => {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
         ? trimmed
         : null;
+};
+const canReadProject = (project, authUser) => {
+    if (project.is_public)
+        return true;
+    if (!authUser)
+        return false;
+    if (authUser.role === 'admin')
+        return true;
+    return Boolean(project.doctor_id) && String(authUser.userId) === String(project.doctor_id);
+};
+const canWritePrivateProject = (project, authUser) => {
+    if (!authUser)
+        return false;
+    if (authUser.role === 'admin')
+        return true;
+    return Boolean(project.doctor_id) && String(authUser.userId) === String(project.doctor_id);
+};
+const sendProjectAccessDenied = (res, authUser) => {
+    if (!authUser) {
+        return res.status(401).json({ code: 'AUTH_REQUIRED', message: 'Для просмотра проекта требуется вход' });
+    }
+    return res.status(403).json({ code: 'FORBIDDEN', message: 'Доступ запрещен' });
+};
+const normalizeAuthorName = (value) => {
+    if (typeof value !== 'string')
+        return '';
+    return value.replace(/\s+/g, ' ').trim().slice(0, 80);
+};
+const resolveSketchAuthor = async (authUser, guestName) => {
+    if (!authUser) {
+        const name = normalizeAuthorName(guestName);
+        return name ? { userId: null, name, role: 'guest' } : null;
+    }
+    const userResult = await db_1.default.query('SELECT full_name FROM users WHERE id = $1', [authUser.userId]);
+    const fallbackName = authUser.role === 'admin' ? 'Администратор' : 'Врач';
+    const name = normalizeAuthorName(userResult.rows[0]?.full_name) || fallbackName;
+    return {
+        userId: authUser.userId,
+        name,
+        role: authUser.role,
+    };
 };
 // 1. Обновленный метод UPDATE (теперь принимает и файлы)
 const updateProject = async (req, res) => {
@@ -114,6 +196,7 @@ const createProject = async (req, res) => {
     try {
         const { country, city, clinic, department, doctor_id, doctor_name, patient_name, open_scene, is_public } = req.body;
         const files = getUploadedFiles(req.files);
+        const normalizedDoctorId = normalizeOptionalUuid(doctor_id);
         console.log("🔍 [CREATING PROJECT] Data received:", req.body);
         const sCountry = country || 'Unknown_Country';
         const sCity = city || 'Unknown_City';
@@ -125,7 +208,7 @@ const createProject = async (req, res) => {
         const projectId = (0, crypto_1.randomUUID)();
         const projectPath = (0, fileSystem_1.createProjectPath)(sCountry, sCity, sClinic, sDept, sDocName, sPatient, projectId);
         await db_1.default.query(`INSERT INTO projects (id, doctor_id, patient_name, doctor_display_name, file_path_root, is_public) 
-      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [projectId, doctor_id, sPatient, sDocName, projectPath, isPublic]);
+      VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [projectId, normalizedDoctorId, sPatient, sDocName, projectPath, isPublic]);
         if (files.length > 0) {
             const stlFolder = path_1.default.join(projectPath, 'stl');
             files.forEach(file => {
@@ -167,22 +250,23 @@ exports.createProject = createProject;
 // Получение списка проектов (оставляем для админки)
 const getProjects = async (req, res) => {
     try {
-        const { userId, role } = req.query;
         const authUser = req.user;
-        const effectiveRole = authUser?.role || role;
-        const effectiveUserId = authUser?.userId || userId;
+        if (!authUser) {
+            return res.status(401).json({ code: 'AUTH_REQUIRED', message: 'Требуется вход в систему' });
+        }
         let query = `
   SELECT 
     p.*, 
     u.full_name as doctor_display_name,
+    (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id) as sketches_count,
     (SELECT COUNT(*) FROM sketches s WHERE s.project_id = p.id AND s.is_read = false) as unread_sketches_count
   FROM projects p
   LEFT JOIN users u ON p.doctor_id = u.id
 `;
         let params = [];
-        if (effectiveRole === 'doctor' && effectiveUserId) {
+        if (authUser.role === 'doctor') {
             query += ` WHERE p.doctor_id = $1`;
-            params = [effectiveUserId];
+            params = [authUser.userId];
         }
         query += ` ORDER BY p.created_at DESC`;
         const result = await db_1.default.query(query, params);
@@ -193,6 +277,59 @@ const getProjects = async (req, res) => {
     }
 };
 exports.getProjects = getProjects;
+const getProjectFolders = async (_req, res) => {
+    try {
+        const foldersResult = await db_1.default.query(`SELECT id, name
+       FROM project_folders
+       WHERE id <> ALL($1)
+       ORDER BY sort_order ASC, created_at ASC`, [Array.from(REMOVED_PROJECT_FOLDER_IDS)]);
+        const assignmentsResult = await db_1.default.query(`SELECT project_id, folder_id
+       FROM project_folder_assignments
+       WHERE folder_id <> ALL($1)`, [Array.from(REMOVED_PROJECT_FOLDER_IDS)]);
+        res.json({
+            folders: foldersResult.rows,
+            projectFolders: assignmentsResult.rows.reduce((map, row) => {
+                map[String(row.project_id)] = String(row.folder_id);
+                return map;
+            }, {}),
+        });
+    }
+    catch (error) {
+        console.error('❌ Ошибка получения папок проектов:', error);
+        res.status(500).json({ message: 'Ошибка получения папок проектов' });
+    }
+};
+exports.getProjectFolders = getProjectFolders;
+const saveProjectFolders = async (req, res) => {
+    const client = await db_1.default.connect();
+    try {
+        const folders = normalizeProjectFoldersPayload(req.body?.folders);
+        const folderIds = new Set(folders.map((folder) => folder.id));
+        const projectFolders = normalizeFolderAssignmentsPayload(req.body?.projectFolders, folderIds);
+        await client.query('BEGIN');
+        await client.query('DELETE FROM project_folder_assignments');
+        await client.query('DELETE FROM project_folders');
+        for (const [index, folder] of folders.entries()) {
+            await client.query(`INSERT INTO project_folders (id, name, sort_order)
+         VALUES ($1, $2, $3)`, [folder.id, folder.name, index]);
+        }
+        for (const [projectId, folderId] of Object.entries(projectFolders)) {
+            await client.query(`INSERT INTO project_folder_assignments (project_id, folder_id)
+         VALUES ($1, $2)`, [projectId, folderId]);
+        }
+        await client.query('COMMIT');
+        res.json({ folders, projectFolders });
+    }
+    catch (error) {
+        await client.query('ROLLBACK');
+        console.error('❌ Ошибка сохранения папок проектов:', error);
+        res.status(500).json({ message: 'Ошибка сохранения папок проектов' });
+    }
+    finally {
+        client.release();
+    }
+};
+exports.saveProjectFolders = saveProjectFolders;
 const markSketchAsRead = async (req, res) => {
     try {
         const { sketchId } = req.params;
@@ -214,8 +351,8 @@ const getProjectById = async (req, res) => {
         // server/src/controllers/projectController.ts
         const project = result.rows[0];
         const authUser = req.user;
-        if (!project.is_public && !authUser) {
-            return res.status(401).json({ message: "Для просмотра проекта требуется вход" });
+        if (!canReadProject(project, authUser)) {
+            return sendProjectAccessDenied(res, authUser);
         }
         const stlFolder = path_1.default.join(project.file_path_root, 'stl');
         const relativePath = getStorageRelativePath(project.file_path_root);
@@ -246,8 +383,23 @@ const saveProjectScene = async (req, res) => {
     try {
         const id = getParamAsString(req.params.id);
         const { sceneState } = req.body;
+        const authUser = req.user;
+        // Получаем информацию о проекте
+        const projectRes = await db_1.default.query("SELECT is_public, doctor_id FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0) {
+            return res.status(404).json({ message: "Проект не найден" });
+        }
+        const project = projectRes.rows[0];
+        // Если проект НЕ публичный, проверяем авторизацию и права
+        if (!project.is_public) {
+            if (!authUser) {
+                return res.status(401).json({ code: 'AUTH_REQUIRED', message: "Требуется авторизация для редактирования приватного проекта" });
+            }
+            if (!canWritePrivateProject(project, authUser)) {
+                return res.status(403).json({ code: 'FORBIDDEN', message: "Нет прав на редактирование этого проекта" });
+            }
+        }
         await db_1.default.query("UPDATE projects SET scene_state = $1 WHERE id = $2", [JSON.stringify(sceneState), id]);
-        console.log(`💾 Сцена проекта ${id} была сохранена.`);
         res.json({ message: "Сцена успешно сохранена" });
     }
     catch (error) {
@@ -260,12 +412,33 @@ exports.saveProjectScene = saveProjectScene;
 const saveSketch = async (req, res) => {
     try {
         const id = getParamAsString(req.params.id);
-        const { cameraState, canvasData, svgContent, textNotes, audioNotes, modelsState } = req.body; // <--- Добавили modelsState
-        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        const { cameraState, canvasData, svgContent, textNotes, audioNotes, modelsState, guestName } = req.body;
+        const authUser = req.user;
+        // 1. Получаем информацию о проекте (включая is_public и doctor_id)
+        const projectRes = await db_1.default.query("SELECT file_path_root, is_public, doctor_id FROM projects WHERE id = $1", [id]);
         if (projectRes.rows.length === 0) {
             return res.status(404).json({ message: "Проект не найден" });
         }
-        const projectPath = projectRes.rows[0].file_path_root;
+        const project = projectRes.rows[0];
+        // 2. Проверка прав доступа
+        if (!project.is_public) {
+            // Приватный проект — нужна авторизация и права владельца
+            if (!authUser) {
+                return res.status(401).json({ code: 'AUTH_REQUIRED', message: "Требуется авторизация для сохранения эскиза в приватном проекте" });
+            }
+            if (!canWritePrivateProject(project, authUser)) {
+                return res.status(403).json({ code: 'FORBIDDEN', message: "Нет прав на сохранение эскиза в этом проекте" });
+            }
+        }
+        // Если проект публичный — анонимный пользователь может сохранять (authUser может быть undefined)
+        const author = await resolveSketchAuthor(authUser, guestName);
+        if (!author) {
+            return res.status(400).json({
+                code: 'GUEST_NAME_REQUIRED',
+                message: 'Укажите имя автора эскиза',
+            });
+        }
+        const projectPath = project.file_path_root;
         const sketchesBasePath = path_1.default.join(projectPath, 'sketches');
         if (!fs_1.default.existsSync(sketchesBasePath)) {
             fs_1.default.mkdirSync(sketchesBasePath, { recursive: true });
@@ -281,27 +454,43 @@ const saveSketch = async (req, res) => {
         fs_1.default.mkdirSync(newSketchDirPath, { recursive: true });
         const jsonFileName = 'data.json';
         const svgFileName = 'sketch.svg';
-        fs_1.default.writeFileSync(path_1.default.join(newSketchDirPath, jsonFileName), JSON.stringify({ cameraState, canvasData, textNotes, audioNotes, modelsState }, null, 2));
+        fs_1.default.writeFileSync(path_1.default.join(newSketchDirPath, jsonFileName), JSON.stringify({
+            cameraState,
+            canvasData,
+            textNotes,
+            audioNotes,
+            modelsState,
+            authorName: author.name,
+            authorRole: author.role,
+        }, null, 2));
         if (svgContent) {
             fs_1.default.writeFileSync(path_1.default.join(newSketchDirPath, svgFileName), svgContent);
         }
         console.log(`✅ Эскиз сохранен в папку: ${newSketchDirPath}`);
-        const sketchRes = await db_1.default.query(`INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
-   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, [
+        const sketchRes = await db_1.default.query(`INSERT INTO sketches (
+         project_id, author_user_id, author_name, author_role, camera_state, canvas_data,
+         text_notes, audio_notes, folder_number, models_state
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, [
             id,
+            author.userId,
+            author.name,
+            author.role,
             JSON.stringify(cameraState),
             JSON.stringify(canvasData),
             JSON.stringify(textNotes || []),
             JSON.stringify(audioNotes || []),
             nextFolderNumber,
-            JSON.stringify(modelsState || []) // <--- Сохраняем в БД
+            JSON.stringify(modelsState || [])
         ]);
         const sketchId = sketchRes.rows[0].id;
         await db_1.default.query(`INSERT INTO technical_tasks (project_id, sketch_id) VALUES ($1, $2)`, [id, sketchId]);
         res.status(200).json({
             message: "Эскиз и ТЗ успешно сохранены в новую папку",
             sketchId,
-            folderId: nextFolderNumber
+            folderId: nextFolderNumber,
+            authorName: author.name,
+            authorRole: author.role,
         });
     }
     catch (error) {
@@ -314,7 +503,16 @@ exports.saveSketch = saveSketch;
 const getProjectSketches = async (req, res) => {
     try {
         const id = getParamAsString(req.params.id);
-        const result = await db_1.default.query(`SELECT id, folder_number, camera_state, canvas_data, text_notes, audio_notes, models_state, created_at, is_read
+        const authUser = req.user;
+        const projectRes = await db_1.default.query("SELECT is_public, doctor_id FROM projects WHERE id = $1", [id]);
+        if (projectRes.rows.length === 0) {
+            return res.status(404).json({ message: "Проект не найден" });
+        }
+        if (!canReadProject(projectRes.rows[0], authUser)) {
+            return sendProjectAccessDenied(res, authUser);
+        }
+        const result = await db_1.default.query(`SELECT id, folder_number, camera_state, canvas_data, text_notes, audio_notes, models_state,
+          author_user_id, author_name, author_role, created_at, is_read
   FROM sketches 
   WHERE project_id = $1 
   ORDER BY folder_number ASC`, [id]);
@@ -326,6 +524,9 @@ const getProjectSketches = async (req, res) => {
             textNotes: row.text_notes,
             audioNotes: row.audio_notes || [],
             modelsState: row.models_state, // <--- Передаем во фронтенд!
+            authorUserId: row.author_user_id,
+            authorName: row.author_name,
+            authorRole: row.author_role,
             createdAt: row.created_at,
             is_read: row.is_read,
             svgUrl: `/api/projects/${id}/sketches/${row.folder_number}/svg`
@@ -343,11 +544,16 @@ const getSketchSvg = async (req, res) => {
     try {
         const id = getParamAsString(req.params.id);
         const folder = getParamAsString(req.params.folder);
-        const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
+        const authUser = req.user;
+        const projectRes = await db_1.default.query("SELECT file_path_root, is_public, doctor_id FROM projects WHERE id = $1", [id]);
         if (projectRes.rows.length === 0) {
             return res.status(404).json({ message: "Проект не найден" });
         }
-        const projectPath = projectRes.rows[0].file_path_root;
+        const project = projectRes.rows[0];
+        if (!canReadProject(project, authUser)) {
+            return sendProjectAccessDenied(res, authUser);
+        }
+        const projectPath = project.file_path_root;
         const svgPath = path_1.default.join(projectPath, 'sketches', folder, 'sketch.svg');
         if (!fs_1.default.existsSync(svgPath)) {
             return res.status(404).json({ message: "SVG файл не найден" });
@@ -366,6 +572,8 @@ const importSketches = async (req, res) => {
     const files = req.files;
     try {
         const id = getParamAsString(req.params.id);
+        const authUser = req.user;
+        const importingAuthor = await resolveSketchAuthor(authUser, null);
         // 1. Проверяем существование проекта и находим его путь
         const projectRes = await db_1.default.query("SELECT file_path_root FROM projects WHERE id = $1", [id]);
         if (projectRes.rows.length === 0) {
@@ -423,10 +631,24 @@ const importSketches = async (req, res) => {
                 const textNotes = parsedData.textNotes || [];
                 const audioNotes = parsedData.audioNotes || [];
                 const modelsState = parsedData.modelsState || []; // <--- Вытаскиваем modelsState
+                const importedAuthorName = normalizeAuthorName(parsedData.authorName);
+                const importedAuthorRole = ['admin', 'doctor', 'guest'].includes(parsedData.authorRole)
+                    ? parsedData.authorRole
+                    : null;
+                const hasImportedAuthor = Boolean(importedAuthorName && importedAuthorRole);
+                const authorName = hasImportedAuthor ? importedAuthorName : importingAuthor?.name || 'Администратор';
+                const authorRole = hasImportedAuthor ? importedAuthorRole : importingAuthor?.role || 'admin';
+                const authorUserId = hasImportedAuthor ? null : importingAuthor?.userId || null;
                 // Пишем в БД эскиз
-                const sketchRes = await db_1.default.query(`INSERT INTO sketches (project_id, camera_state, canvas_data, text_notes, audio_notes, folder_number, models_state) 
-   VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`, [
+                const sketchRes = await db_1.default.query(`INSERT INTO sketches (
+     project_id, author_user_id, author_name, author_role, camera_state, canvas_data,
+     text_notes, audio_notes, folder_number, models_state
+   )
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, [
                     id,
+                    authorUserId,
+                    authorName,
+                    authorRole,
                     JSON.stringify(cameraState),
                     JSON.stringify(canvasData),
                     JSON.stringify(textNotes),

@@ -23,26 +23,31 @@ const storage = multer_1.default.diskStorage({
 });
 const upload = (0, multer_1.default)({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 // --- МАРШРУТЫ ---
-router.post('/create', authMiddleware_1.authenticateToken, upload.array('files', 10), projectController_2.createProject);
-router.post('/:id/sketch', authMiddleware_1.authenticateToken, projectController_2.saveSketch);
+router.post('/create', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), upload.array('files', 10), projectController_2.createProject);
+// Сохранение эскиза: для публичных проектов допускается без авторизации.
+// optionalAuthenticateToken прокидывает пользователя, если токен есть, но не блокирует анонимов.
+router.post('/:id/sketch', authMiddleware_1.optionalAuthenticateToken, projectController_2.saveSketch);
 router.get('/list', authMiddleware_1.authenticateToken, projectController_2.getProjects);
+router.get('/folders', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), projectController_2.getProjectFolders);
+router.put('/folders', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), projectController_2.saveProjectFolders);
 // 1. ПОЛУЧЕНИЕ ПРОЕКТА
 router.get('/:id', authMiddleware_1.optionalAuthenticateToken, (req, res) => {
     (0, projectController_2.getProjectById)(req, res);
 });
 // GET /api/projects/:id/sketches
-router.get('/:id/sketches', projectController_1.getProjectSketches);
+router.get('/:id/sketches', authMiddleware_1.optionalAuthenticateToken, projectController_1.getProjectSketches);
 // GET /api/projects/:id/sketches/:folder/svg
-router.get('/:id/sketches/:folder/svg', projectController_1.getSketchSvg);
+router.get('/:id/sketches/:folder/svg', authMiddleware_1.optionalAuthenticateToken, projectController_1.getSketchSvg);
 // 2. ОБНОВЛЕНИЕ ПРОЕКТА (Текстовые данные + Новые файлы)
 // Добавляем upload.array('files'), чтобы multer распарсил новые STL
-router.put('/:id', authMiddleware_1.authenticateToken, upload.array('files', 10), projectController_2.updateProject);
+router.put('/:id', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), upload.array('files', 10), projectController_2.updateProject);
 // 3. УДАЛЕНИЕ КОНКРЕТНОГО ФАЙЛА ИЗ ПРОЕКТА
-router.post('/:id/delete-file', authMiddleware_1.authenticateToken, projectController_2.deleteFile);
+router.post('/:id/delete-file', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), projectController_2.deleteFile);
 // 4. СОХРАНЕНИЕ СОСТОЯНИЯ СЦЕНЫ
-router.put('/:id/scene', authMiddleware_1.authenticateToken, projectController_2.saveProjectScene);
+// router.put('/:id/scene', authenticateToken, saveProjectScene);
+router.put('/:id/scene', authMiddleware_1.optionalAuthenticateToken, projectController_2.saveProjectScene);
 // 5. ИМПОРТ ГОТОВЫХ ЭСКИЗОВ (.json + .svg)
 // Разрешаем загрузку до 50 файлов за раз. Поле называется 'sketchFiles', как мы указали во фронтенде!
-router.post('/:id/import-sketches', authMiddleware_1.authenticateToken, upload.array('sketchFiles', 50), projectController_2.importSketches);
-router.post('/sketches/:sketchId/read', projectController_1.markSketchAsRead);
+router.post('/:id/import-sketches', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), upload.array('sketchFiles', 50), projectController_2.importSketches);
+router.post('/sketches/:sketchId/read', authMiddleware_1.authenticateToken, (0, authMiddleware_1.authorizeRoles)('admin'), projectController_1.markSketchAsRead);
 exports.default = router;

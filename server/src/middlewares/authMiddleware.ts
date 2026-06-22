@@ -2,45 +2,71 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_key_change_me_in_prod';
+
 export interface AuthRequest extends Request {
   user?: {
     userId: string;
-    role: string;
+    role: 'admin' | 'doctor';
   };
 }
 
-export const authenticateToken = (req: any, res: Response, next: NextFunction) => {
+const getBearerToken = (req: Request): string | null => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  if (!authHeader || Array.isArray(authHeader)) return null;
+
+  const [scheme, token] = authHeader.trim().split(/\s+/);
+  if (scheme?.toLowerCase() !== 'bearer') return null;
+  if (!token || token === 'null' || token === 'undefined') return null;
+
+  return token;
+};
+
+export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
+  const token = getBearerToken(req);
 
   if (!token) {
     console.log("❌ [AUTH] Токен отсутствует в запросе к:", req.originalUrl);
-    return res.status(401).json({ error: 'Access Denied' }); 
+    return res.status(401).json({ code: 'AUTH_REQUIRED', message: 'Требуется вход в систему' }); 
   }
 
   try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me_in_prod');
-    req.user = verified;
+    req.user = jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
     next();
   } catch (err) {
     console.log("❌ [AUTH] Токен невалиден");
-    res.status(403).json({ error: 'Invalid Token' });
+    return res.status(401).json({ code: 'INVALID_TOKEN', message: 'Сессия истекла. Войдите снова.' });
   }
 };
 
-export const optionalAuthenticateToken = (req: any, _res: Response, next: NextFunction) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+export const optionalAuthenticateToken = (req: AuthRequest, _res: Response, next: NextFunction) => {
+  const token = getBearerToken(req);
 
-  if (!token || token === 'null' || token === 'undefined') {
+  if (!token) {
     next();
     return;
   }
 
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET || 'super_secret_key_change_me_in_prod');
+    req.user = jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
   } catch {
     req.user = undefined;
+  }
+
+  next();
+};
+
+export const authorizeRoles = (...roles: Array<'admin' | 'doctor'>) => (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  if (!req.user) {
+    return res.status(401).json({ code: 'AUTH_REQUIRED', message: 'Требуется вход в систему' });
+  }
+
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ code: 'FORBIDDEN', message: 'Доступ запрещен' });
   }
 
   next();
