@@ -39,8 +39,9 @@ const addDoctor = async (req, res) => {
 };
 exports.addDoctor = addDoctor;
 const deleteDoctor = async (req, res) => {
-    const client = await db_1.default.connect();
+    let client;
     try {
+        client = await db_1.default.connect();
         await client.query('BEGIN');
         await client.query('UPDATE projects SET doctor_id = NULL WHERE doctor_id = $1', [req.params.id]);
         const result = await client.query("DELETE FROM users WHERE id = $1 AND role = 'doctor'", [req.params.id]);
@@ -52,12 +53,16 @@ const deleteDoctor = async (req, res) => {
         res.json({ message: 'Врач удален' });
     }
     catch (error) {
-        await client.query('ROLLBACK');
+        if (client) {
+            await client.query('ROLLBACK').catch((rollbackError) => {
+                console.error("❌ Ошибка отката удаления врача:", rollbackError.message);
+            });
+        }
         console.error("❌ Ошибка удаления врача:", error.message);
         res.status(500).json({ message: 'Ошибка при удалении', error: error.message });
     }
     finally {
-        client.release();
+        client?.release();
     }
 };
 exports.deleteDoctor = deleteDoctor;

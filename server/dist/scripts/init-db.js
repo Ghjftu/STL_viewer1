@@ -10,7 +10,7 @@ const db_1 = __importDefault(require("../config/db"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const initDb = async () => {
     try {
-        const sqlPath = path_1.default.join(process.cwd(), 'init.sql'); // Исправленный путь для Docker
+        const sqlPath = path_1.default.resolve(__dirname, '../../init.sql');
         const sql = fs_1.default.readFileSync(sqlPath, 'utf8');
         console.log('⏳ Initializing database...');
         await db_1.default.query(sql);
@@ -26,9 +26,10 @@ const initDb = async () => {
     }
     catch (err) {
         console.error('❌ Init DB Error:', err);
+        throw err;
     }
 };
 exports.initDb = initDb;
 if (require.main === module) {
-    (0, exports.initDb)();
+    (0, exports.initDb)().catch(() => process.exit(1));
 }

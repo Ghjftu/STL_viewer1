@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs';
 
 export const initDb = async () => {
   try {
-    const sqlPath = path.join(process.cwd(), 'init.sql'); // Исправленный путь для Docker
+    const sqlPath = path.resolve(__dirname, '../../init.sql');
     const sql = fs.readFileSync(sqlPath, 'utf8');
 
     console.log('⏳ Initializing database...');
@@ -24,9 +24,10 @@ export const initDb = async () => {
     console.log('✅ Database initialized. Admin updated with hash.');
   } catch (err) {
     console.error('❌ Init DB Error:', err);
+    throw err;
   }
 };
 
 if (require.main === module) {
-  initDb();
+  initDb().catch(() => process.exit(1));
 }

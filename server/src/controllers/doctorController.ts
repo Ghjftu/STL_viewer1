@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { PoolClient } from 'pg';
 import pool from '../config/db';
 import bcrypt from 'bcryptjs';
 
@@ -43,9 +44,10 @@ export const addDoctor = async (req: Request, res: Response) => {
 };
 
 export const deleteDoctor = async (req: Request, res: Response) => {
-  const client = await pool.connect();
+  let client: PoolClient | undefined;
 
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
     await client.query('UPDATE projects SET doctor_id = NULL WHERE doctor_id = $1', [req.params.id]);
 
@@ -59,10 +61,14 @@ export const deleteDoctor = async (req: Request, res: Response) => {
     await client.query('COMMIT');
     res.json({ message: 'Врач удален' });
   } catch (error: any) {
-    await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK').catch((rollbackError) => {
+        console.error("❌ Ошибка отката удаления врача:", rollbackError.message);
+      });
+    }
     console.error("❌ Ошибка удаления врача:", error.message);
     res.status(500).json({ message: 'Ошибка при удалении', error: error.message });
   } finally {
-    client.release();
+    client?.release();
   }
 };

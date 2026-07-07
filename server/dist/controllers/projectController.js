@@ -301,8 +301,9 @@ const getProjectFolders = async (_req, res) => {
 };
 exports.getProjectFolders = getProjectFolders;
 const saveProjectFolders = async (req, res) => {
-    const client = await db_1.default.connect();
+    let client;
     try {
+        client = await db_1.default.connect();
         const folders = normalizeProjectFoldersPayload(req.body?.folders);
         const folderIds = new Set(folders.map((folder) => folder.id));
         const projectFolders = normalizeFolderAssignmentsPayload(req.body?.projectFolders, folderIds);
@@ -321,12 +322,16 @@ const saveProjectFolders = async (req, res) => {
         res.json({ folders, projectFolders });
     }
     catch (error) {
-        await client.query('ROLLBACK');
+        if (client) {
+            await client.query('ROLLBACK').catch((rollbackError) => {
+                console.error('❌ Ошибка отката сохранения папок проектов:', rollbackError.message);
+            });
+        }
         console.error('❌ Ошибка сохранения папок проектов:', error);
         res.status(500).json({ message: 'Ошибка сохранения папок проектов' });
     }
     finally {
-        client.release();
+        client?.release();
     }
 };
 exports.saveProjectFolders = saveProjectFolders;

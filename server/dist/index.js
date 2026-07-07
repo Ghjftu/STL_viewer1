@@ -28,7 +28,16 @@ app.use('/api/projects', projectRoutes_1.default);
 app.use('/api', (req, res) => {
     res.status(404).json({ message: "API route not found" });
 });
-app.listen(PORT, async () => {
-    console.log(`🚀 Server started on port ${PORT}`);
-    await (0, init_db_1.initDb)();
-});
+const startServer = async () => {
+    try {
+        await (0, init_db_1.initDb)();
+        app.listen(PORT, () => {
+            console.log(`🚀 Server started on port ${PORT}`);
+        });
+    }
+    catch (err) {
+        console.error('❌ Server startup failed. Database is not ready:', err);
+        process.exit(1);
+    }
+};
+startServer();

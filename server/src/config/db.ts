@@ -1,14 +1,50 @@
-import { Pool } from 'pg';
+import dotenv from 'dotenv';
+import { Pool, PoolConfig } from 'pg';
 
-console.log("DEBUG: DB_HOST is", process.env.DB_HOST); // Добавь это, чтобы увидеть в логах, что реально приходит
+dotenv.config();
 
-const pool = new Pool({
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  host: process.env.DB_HOST || 'stl_postgres', // Явно пропиши имя контейнера
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME,
-});
+const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'] as const;
+
+const getRequiredEnv = (name: typeof requiredEnv[number]): string => {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(
+      `Missing required database environment variable ${name}. ` +
+      'Configure DB_* explicitly so pg does not fall back to USER/PGUSER.'
+    );
+  }
+
+  return value;
+};
+
+const parsePort = (value = '5432'): number => {
+  const port = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid DB_PORT value: ${value}`);
+  }
+
+  return port;
+};
+
+const dbConfig: PoolConfig = {
+  user: getRequiredEnv('DB_USER'),
+  password: getRequiredEnv('DB_PASSWORD'),
+  host: getRequiredEnv('DB_HOST'),
+  port: parsePort(process.env.DB_PORT),
+  database: getRequiredEnv('DB_NAME'),
+  application_name: 'stl_server',
+  connectionTimeoutMillis: 5000,
+  query_timeout: 30000,
+};
+
+console.log(
+  `[DB] PostgreSQL config: host=${dbConfig.host} port=${dbConfig.port} ` +
+  `database=${dbConfig.database} user=${dbConfig.user}`
+);
+
+const pool = new Pool(dbConfig);
 
 // Обработчик событий подключения
 pool.on('connect', () => {

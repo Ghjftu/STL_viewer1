@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { PoolClient } from 'pg';
 import pool from '../config/db';
 import { randomUUID } from 'crypto';
 import { createProjectPath, getSafeFileName, STORAGE_DIR } from '../utils/fileSystem';
@@ -370,9 +371,10 @@ export const getProjectFolders = async (_req: Request, res: Response) => {
 };
 
 export const saveProjectFolders = async (req: Request, res: Response) => {
-  const client = await pool.connect();
+  let client: PoolClient | undefined;
 
   try {
+    client = await pool.connect();
     const folders = normalizeProjectFoldersPayload(req.body?.folders);
     const folderIds = new Set(folders.map((folder) => folder.id));
     const projectFolders = normalizeFolderAssignmentsPayload(req.body?.projectFolders, folderIds);
@@ -400,11 +402,15 @@ export const saveProjectFolders = async (req: Request, res: Response) => {
     await client.query('COMMIT');
     res.json({ folders, projectFolders });
   } catch (error: any) {
-    await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK').catch((rollbackError) => {
+        console.error('❌ Ошибка отката сохранения папок проектов:', rollbackError.message);
+      });
+    }
     console.error('❌ Ошибка сохранения папок проектов:', error);
     res.status(500).json({ message: 'Ошибка сохранения папок проектов' });
   } finally {
-    client.release();
+    client?.release();
   }
 };
 
