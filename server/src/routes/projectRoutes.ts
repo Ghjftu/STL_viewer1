@@ -13,7 +13,8 @@ import {
   saveProjectScene,
   saveSketch,
   updateProject, 
-  deleteFile,      
+  deleteFile,
+  deletePattern,
   importSketches
 } from '../controllers/projectController';
 import { authenticateToken, authorizeRoles, optionalAuthenticateToken } from '../middlewares/authMiddleware';
@@ -30,10 +31,14 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
+const projectUpload = upload.fields([
+  { name: 'files', maxCount: 10 },
+  { name: 'patterns', maxCount: 20 },
+]);
 
 // --- МАРШРУТЫ ---
 
-router.post('/create', authenticateToken, authorizeRoles('admin'), upload.array('files', 10), createProject);
+router.post('/create', authenticateToken, authorizeRoles('admin'), projectUpload, createProject);
 // Сохранение эскиза: для публичных проектов допускается без авторизации.
 // optionalAuthenticateToken прокидывает пользователя, если токен есть, но не блокирует анонимов.
 router.post('/:id/sketch', optionalAuthenticateToken, saveSketch);
@@ -53,10 +58,11 @@ router.get('/:id/sketches/:folder/svg', optionalAuthenticateToken, getSketchSvg)
 
 // 2. ОБНОВЛЕНИЕ ПРОЕКТА (Текстовые данные + Новые файлы)
 // Добавляем upload.array('files'), чтобы multer распарсил новые STL
-router.put('/:id', authenticateToken, authorizeRoles('admin'), upload.array('files', 10), updateProject);
+router.put('/:id', authenticateToken, authorizeRoles('admin'), projectUpload, updateProject);
 
 // 3. УДАЛЕНИЕ КОНКРЕТНОГО ФАЙЛА ИЗ ПРОЕКТА
 router.post('/:id/delete-file', authenticateToken, authorizeRoles('admin'), deleteFile);
+router.post('/:id/delete-pattern', authenticateToken, authorizeRoles('admin'), deletePattern);
 
 // 4. СОХРАНЕНИЕ СОСТОЯНИЯ СЦЕНЫ
 // router.put('/:id/scene', authenticateToken, saveProjectScene);

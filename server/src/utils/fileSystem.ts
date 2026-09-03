@@ -35,7 +35,13 @@ export const createProjectPath = (
   );
   
   // Создаем подпапки
-  const subfolders = ['stl', 'sketches', 'tz'];
+  const subfolders = [
+    'stl',
+    'sketches',
+    'tz',
+    path.join('patterns', 'originals'),
+    path.join('patterns', 'processed'),
+  ];
 
   if (!fs.existsSync(targetPath)) {
     fs.mkdirSync(targetPath, { recursive: true });

@@ -14,6 +14,7 @@ export const ProjectForm: React.FC = () => {
   });
   const [doctors, setDoctors] = useState<any[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [selectedPatternFiles, setSelectedPatternFiles] = useState<FileList | null>(null);
   const [fileGroups, setFileGroups] = useState<Record<string, string>>({}); // <--- НОВЫЙ СТЕЙТ
   const [openScene, setOpenScene] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -116,7 +117,10 @@ export const ProjectForm: React.FC = () => {
   };
 
   const handleCreate = async () => {
-    if (!selectedFiles || !formData.doctor_id) return alert("Выберите файлы и врача");
+    if (!formData.doctor_id) return alert("Выберите врача");
+    if ((!selectedFiles || selectedFiles.length === 0) && (!selectedPatternFiles || selectedPatternFiles.length === 0)) {
+      return alert("Добавьте хотя бы одну 3D-модель или лекало");
+    }
 
     const token = getAuthToken();
     // Шаг 1: Проверка наличия токена
@@ -131,11 +135,23 @@ export const ProjectForm: React.FC = () => {
     data.append('open_scene', String(openScene));
 
     // Отправляем файлы с транслитерированными именами
-    const filesToSend = getTransliteratedFiles(selectedFiles);
-    filesToSend.forEach(file => data.append('files', file));
+    let normalizedFileGroups: Record<string, string> = {};
+    if (selectedFiles) {
+      const filesToSend = getTransliteratedFiles(selectedFiles);
+      filesToSend.forEach(file => data.append('files', file));
+      normalizedFileGroups = filesToSend.reduce<Record<string, string>>((groups, file, index) => {
+        const originalFile = selectedFiles[index];
+        groups[file.name] = fileGroups[originalFile.name] || 'Ткани';
+        return groups;
+      }, {});
+    }
+
+    if (selectedPatternFiles) {
+      Array.from(selectedPatternFiles).forEach(file => data.append('patterns', file));
+    }
 
     // НОВОЕ: Передаем словарь групп в JSON
-    data.append('file_groups', JSON.stringify(fileGroups));
+    data.append('file_groups', JSON.stringify(normalizedFileGroups));
 
     setLoading(true);
     try {
@@ -301,13 +317,37 @@ export const ProjectForm: React.FC = () => {
                         onChange={(e) => setFileGroups({...fileGroups, [file.name]: e.target.value})}
                       >
                         <option value="Ткани">Ткани</option>
-                        <option value="Импланты">Импланты</option>
-                        <option value="Лекала">Лекала</option>
+                        <option value="Протезы">Протезы</option>
                       </select>
                     </li>
                   ))}
                 </ul>
               </div>
+            )}
+          </div>
+
+          <div className={`rounded-2xl border border-dashed p-4 text-center sm:p-6 ${
+            isDarkTheme ? 'border-neutral-700 bg-neutral-950/45' : 'border-slate-300 bg-white/48'
+          }`}>
+            <label className="mb-1 block text-sm font-black" style={{ color: currentAccent.color }}>Загрузите лекала</label>
+            <p className={`mb-3 text-xs ${isDarkTheme ? 'text-neutral-500' : 'text-slate-500'}`}>
+              PNG, JPG, WebP или SVG — фон будет автоматически удалён.
+            </p>
+            <input
+              type="file"
+              multiple
+              accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml"
+              className={`w-full text-sm ${isDarkTheme ? 'text-neutral-400' : 'text-slate-500'} file:mb-2 file:mr-4 file:rounded-full file:border-0 file:bg-[var(--ui-accent)] file:px-4 file:py-2 file:text-sm file:font-black file:text-white sm:file:mb-0`}
+              onChange={(event) => setSelectedPatternFiles(event.target.files)}
+            />
+            {selectedPatternFiles && selectedPatternFiles.length > 0 && (
+              <ul className={`mt-4 max-h-36 space-y-1 overflow-y-auto rounded-xl p-3 text-left text-xs ${
+                isDarkTheme ? 'bg-neutral-900/75 text-neutral-300 ring-1 ring-neutral-700' : 'bg-white/75 text-slate-700 ring-1 ring-white'
+              }`}>
+                {Array.from(selectedPatternFiles).map((file) => (
+                  <li key={`${file.name}-${file.lastModified}`} className="truncate" title={file.name}>{file.name}</li>
+                ))}
+              </ul>
             )}
           </div>
 

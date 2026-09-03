@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { createProjectPath, getSafeFileName, STORAGE_DIR } from '../utils/fileSystem';
 import fs from 'fs';
 import path from 'path';
+import sharp from 'sharp';
 
 type AuthUser = {
   userId: string;
@@ -33,8 +34,186 @@ const getParamAsString = (param: string | string[] | undefined): string => {
   return param || '';
 };
 
-const getUploadedFiles = (files: Request['files']): Express.Multer.File[] => {
-  return Array.isArray(files) ? files : [];
+const getUploadedFiles = (files: Request['files'], fieldName = 'files'): Express.Multer.File[] => {
+  if (Array.isArray(files)) return fieldName === 'files' ? files : [];
+  return files?.[fieldName] || [];
+};
+
+const PATTERN_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.svg']);
+const MAX_PATTERN_EDGE = 4096;
+
+type PreparedPattern = {
+  id: string;
+  originalName: string;
+  sourceFileName: string;
+  processedFileName: string;
+  width: number;
+  height: number;
+};
+
+const getMedian = (values: number[]): number => {
+  if (values.length === 0) return 255;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+};
+
+const makePatternBackgroundTransparent = async (sourcePath: string, outputPath: string) => {
+  const { data, info } = await sharp(sourcePath, {
+    density: 300,
+    limitInputPixels: 40_000_000,
+    failOn: 'error',
+  })
+    .rotate()
+    .resize({
+      width: MAX_PATTERN_EDGE,
+      height: MAX_PATTERN_EDGE,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const borderR: number[] = [];
+  const borderG: number[] = [];
+  const borderB: number[] = [];
+  let transparentBorderPixels = 0;
+  let sampledBorderPixels = 0;
+  const step = Math.max(1, Math.floor(Math.max(info.width, info.height) / 600));
+
+  const samplePixel = (x: number, y: number) => {
+    const offset = (y * info.width + x) * 4;
+    sampledBorderPixels += 1;
+    if (data[offset + 3] < 32) {
+      transparentBorderPixels += 1;
+      return;
+    }
+    borderR.push(data[offset]);
+    borderG.push(data[offset + 1]);
+    borderB.push(data[offset + 2]);
+  };
+
+  for (let x = 0; x < info.width; x += step) {
+    samplePixel(x, 0);
+    if (info.height > 1) samplePixel(x, info.height - 1);
+  }
+  for (let y = step; y < info.height - 1; y += step) {
+    samplePixel(0, y);
+    if (info.width > 1) samplePixel(info.width - 1, y);
+  }
+
+  const borderIsAlreadyTransparent = sampledBorderPixels > 0 && transparentBorderPixels / sampledBorderPixels > 0.45;
+
+  if (!borderIsAlreadyTransparent && borderR.length > 0) {
+    const background = [getMedian(borderR), getMedian(borderG), getMedian(borderB)];
+    // A tighter transition keeps JPEG contour edges opaque instead of making
+    // compression-softened pixels look washed out.
+    const lowThreshold = 6;
+    const highThreshold = 46;
+
+    for (let offset = 0; offset < data.length; offset += 4) {
+      const redDifference = data[offset] - background[0];
+      const greenDifference = data[offset + 1] - background[1];
+      const blueDifference = data[offset + 2] - background[2];
+      const distance = Math.sqrt(
+        redDifference * redDifference +
+        greenDifference * greenDifference +
+        blueDifference * blueDifference
+      );
+      const normalized = Math.min(1, Math.max(0, (distance - lowThreshold) / (highThreshold - lowThreshold)));
+      const backgroundMask = normalized * normalized * (3 - 2 * normalized);
+      const originalAlpha = data[offset + 3] / 255;
+      const nextAlpha = originalAlpha * backgroundMask;
+
+      if (nextAlpha > 0.01 && backgroundMask < 0.999) {
+        for (let channel = 0; channel < 3; channel += 1) {
+          const recovered = (data[offset + channel] - background[channel] * (1 - backgroundMask)) / backgroundMask;
+          data[offset + channel] = Math.round(Math.min(255, Math.max(0, recovered)));
+        }
+      }
+
+      data[offset + 3] = Math.round(nextAlpha * 255);
+    }
+  }
+
+  await sharp(data, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 4,
+    },
+  })
+    .png({ compressionLevel: 9, adaptiveFiltering: true })
+    .toFile(outputPath);
+
+  return { width: info.width, height: info.height };
+};
+
+const preparePatternFiles = async (
+  projectPath: string,
+  files: Express.Multer.File[]
+): Promise<PreparedPattern[]> => {
+  if (files.length === 0) return [];
+
+  const originalsPath = path.join(projectPath, 'patterns', 'originals');
+  const processedPath = path.join(projectPath, 'patterns', 'processed');
+  fs.mkdirSync(originalsPath, { recursive: true });
+  fs.mkdirSync(processedPath, { recursive: true });
+
+  const prepared: PreparedPattern[] = [];
+
+  for (const file of files) {
+    const extension = path.extname(file.originalname).toLowerCase();
+    if (!PATTERN_EXTENSIONS.has(extension)) {
+      fs.unlinkSync(file.path);
+      throw new Error(`Неподдерживаемый формат лекала: ${file.originalname}`);
+    }
+
+    const id = randomUUID();
+    const sourceFileName = `${id}${extension}`;
+    const processedFileName = `${id}.png`;
+    const sourcePath = path.join(originalsPath, sourceFileName);
+    const outputPath = path.join(processedPath, processedFileName);
+
+    fs.copyFileSync(file.path, sourcePath);
+    fs.unlinkSync(file.path);
+
+    try {
+      const dimensions = await makePatternBackgroundTransparent(sourcePath, outputPath);
+      prepared.push({
+        id,
+        originalName: getSafeFileName(file.originalname) || `Лекало ${prepared.length + 1}`,
+        sourceFileName,
+        processedFileName,
+        ...dimensions,
+      });
+    } catch (error) {
+      fs.rmSync(sourcePath, { force: true });
+      fs.rmSync(outputPath, { force: true });
+      throw new Error(`Не удалось обработать лекало ${file.originalname}: ${(error as Error).message}`);
+    }
+  }
+
+  return prepared;
+};
+
+const insertPreparedPatterns = async (projectId: string, patterns: PreparedPattern[]) => {
+  for (const pattern of patterns) {
+    await pool.query(
+      `INSERT INTO project_patterns (
+        id, project_id, original_name, source_file_name, processed_file_name, width, height
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        pattern.id,
+        projectId,
+        pattern.originalName,
+        pattern.sourceFileName,
+        pattern.processedFileName,
+        pattern.width,
+        pattern.height,
+      ]
+    );
+  }
 };
 
 const getStorageRelativePath = (projectPath: string): string => {
@@ -57,6 +236,46 @@ const parseFileGroups = (rawValue: unknown): Record<string, string> => {
 
 const parseBooleanFormValue = (value: unknown): boolean => {
   return value === true || value === 'true' || value === '1' || value === 'on';
+};
+
+const normalizePatternState = (value: unknown) => {
+  if (!Array.isArray(value)) return null;
+
+  return value.reduce<Array<{
+    id: string;
+    visible: boolean;
+    opacity: number;
+    x: number;
+    y: number;
+    scale: number;
+    contrast: number;
+    color: string;
+  }>>((items, item) => {
+    if (!item || typeof item !== 'object') return items;
+    const candidate = item as Record<string, unknown>;
+    const id = normalizeOptionalUuid(candidate.id);
+    if (!id) return items;
+
+    const clamp = (input: unknown, min: number, max: number, fallback: number) => {
+      const numeric = Number(input);
+      return Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : fallback;
+    };
+    const color = typeof candidate.color === 'string' && /^#[0-9a-f]{6}$/i.test(candidate.color)
+      ? candidate.color
+      : '#ffffff';
+
+    items.push({
+      id,
+      visible: candidate.visible !== false,
+      opacity: clamp(candidate.opacity, 0, 1, 1),
+      x: clamp(candidate.x, 0, 1, 0.5),
+      y: clamp(candidate.y, 0, 1, 0.5),
+      scale: clamp(candidate.scale, 0.1, 5, 1),
+      contrast: clamp(candidate.contrast, 0.5, 3, 1.15),
+      color,
+    });
+    return items;
+  }, []);
 };
 
 const isValidFolderId = (value: unknown): value is string => {
@@ -173,7 +392,8 @@ export const updateProject = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
     const { doctor_id, doctor_name, patient_name, is_public } = req.body;
-    const files = getUploadedFiles(req.files);
+    const files = getUploadedFiles(req.files, 'files');
+    const patternFiles = getUploadedFiles(req.files, 'patterns');
     const normalizedDoctorId = normalizeOptionalUuid(doctor_id);
     const isPublic = parseBooleanFormValue(is_public);
 
@@ -199,6 +419,11 @@ export const updateProject = async (req: Request, res: Response) => {
         fs.copyFileSync(file.path, targetPath);
         fs.unlinkSync(file.path);
       });
+    }
+
+    if (patternFiles.length > 0) {
+      const preparedPatterns = await preparePatternFiles(projectPath, patternFiles);
+      await insertPreparedPatterns(id, preparedPatterns);
     }
 
     res.json({ message: "Проект успешно обновлен" });
@@ -235,10 +460,53 @@ export const deleteFile = async (req: Request, res: Response) => {
   }
 };
 
+export const deletePattern = async (req: Request, res: Response) => {
+  try {
+    const id = getParamAsString(req.params.id);
+    const patternId = normalizeOptionalUuid(req.body?.patternId);
+
+    if (!patternId) {
+      return res.status(400).json({ message: 'Некорректный идентификатор лекала' });
+    }
+
+    const result = await pool.query(
+      `SELECT p.file_path_root, pp.source_file_name, pp.processed_file_name
+       FROM project_patterns pp
+       JOIN projects p ON p.id = pp.project_id
+       WHERE pp.id = $1 AND pp.project_id = $2`,
+      [patternId, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Лекало не найдено' });
+    }
+
+    const pattern = result.rows[0];
+    fs.rmSync(path.join(pattern.file_path_root, 'patterns', 'originals', pattern.source_file_name), { force: true });
+    fs.rmSync(path.join(pattern.file_path_root, 'patterns', 'processed', pattern.processed_file_name), { force: true });
+    await pool.query('DELETE FROM project_patterns WHERE id = $1 AND project_id = $2', [patternId, id]);
+    await pool.query(
+      `UPDATE projects
+       SET pattern_state = COALESCE(
+         (SELECT jsonb_agg(item) FROM jsonb_array_elements(COALESCE(pattern_state, '[]'::jsonb)) AS items(item) WHERE item->>'id' <> $2),
+         '[]'::jsonb
+       )
+       WHERE id = $1`,
+      [id, patternId]
+    );
+
+    res.json({ message: 'Лекало удалено' });
+  } catch (error: any) {
+    console.error('❌ Ошибка удаления лекала:', error);
+    res.status(500).json({ message: 'Ошибка при удалении лекала' });
+  }
+};
+
 export const createProject = async (req: Request, res: Response) => {
   try {
     const { country, city, clinic, department, doctor_id, doctor_name, patient_name, open_scene, is_public } = req.body;
-    const files = getUploadedFiles(req.files);
+    const files = getUploadedFiles(req.files, 'files');
+    const patternFiles = getUploadedFiles(req.files, 'patterns');
     const normalizedDoctorId = normalizeOptionalUuid(doctor_id);
 
     console.log("🔍 [CREATING PROJECT] Data received:", req.body);
@@ -274,10 +542,13 @@ export const createProject = async (req: Request, res: Response) => {
       console.log(`✅ ${files.length} STL files copied to ${stlFolder}`);
     }
 
+    const preparedPatterns = await preparePatternFiles(projectPath, patternFiles);
+    await insertPreparedPatterns(projectId, preparedPatterns);
+
 
     const fileGroups = parseFileGroups(req.body.file_groups);
     const initialSceneState = files.map((file, index) => ({
-      id: `stl-${index}`,
+      id: `stl:${getSafeFileName(file.originalname)}`,
       group: fileGroups[file.originalname] || 'Ткани',
       visible: true,
       color: '#cccccc',
@@ -287,8 +558,21 @@ export const createProject = async (req: Request, res: Response) => {
     }));
 
     await pool.query(
-      "UPDATE projects SET scene_state = $1 WHERE id = $2",
-      [JSON.stringify(initialSceneState), projectId]
+      "UPDATE projects SET scene_state = $1, pattern_state = $2 WHERE id = $3",
+      [
+        JSON.stringify(initialSceneState),
+        JSON.stringify(preparedPatterns.map((pattern, index) => ({
+          id: pattern.id,
+          visible: true,
+          opacity: 1,
+          x: Math.min(0.8, 0.5 + index * 0.025),
+          y: Math.min(0.8, 0.5 + index * 0.025),
+          scale: 1,
+          contrast: 1.15,
+          color: '#ffffff',
+        }))),
+        projectId,
+      ]
     );
 
     res.status(201).json({ 
@@ -450,7 +734,8 @@ let stlFiles: any[] = [];
 if (fs.existsSync(stlFolder)) {
   const files = fs.readdirSync(stlFolder).filter(f => f.toLowerCase().endsWith('.stl'));
   stlFiles = files.map((file, index) => ({
-    id: `stl-${index}`,
+    id: `stl:${file}`,
+    legacyId: `stl-${index}`,
     name: file,
     // УБИРАЕМ baseUrl. Путь должен начинаться со слеша /
     url: `/${relativePath}/stl/${encodeURIComponent(file)}`, 
@@ -462,7 +747,22 @@ if (fs.existsSync(stlFolder)) {
   }));
 }
 
-    res.json({ project, stlFiles });
+const patternsResult = await pool.query(
+  `SELECT id, original_name, processed_file_name, width, height
+   FROM project_patterns
+   WHERE project_id = $1
+   ORDER BY created_at ASC, id ASC`,
+  [id]
+);
+const patterns = patternsResult.rows.map((pattern) => ({
+  id: pattern.id,
+  name: pattern.original_name,
+  url: `/${relativePath}/patterns/processed/${encodeURIComponent(pattern.processed_file_name)}`,
+  width: pattern.width,
+  height: pattern.height,
+}));
+
+    res.json({ project, stlFiles, patterns });
   } catch (error: any) {
     console.error("❌ Ошибка при получении проекта:", error);
     res.status(500).json({ message: "Ошибка сервера" });
@@ -472,7 +772,7 @@ if (fs.existsSync(stlFolder)) {
 export const saveProjectScene = async (req: Request, res: Response) => {
   try {
     const id = getParamAsString(req.params.id);
-    const { sceneState } = req.body;
+    const { sceneState, patternState } = req.body;
     const authUser = (req as any).user as AuthUser;
 
     // Получаем информацию о проекте
@@ -492,9 +792,17 @@ export const saveProjectScene = async (req: Request, res: Response) => {
       }
     }
 
+    const normalizedPatternState = patternState === undefined ? null : normalizePatternState(patternState);
+    if (patternState !== undefined && normalizedPatternState === null) {
+      return res.status(400).json({ message: 'Некорректное состояние лекал' });
+    }
+
     await pool.query(
-      "UPDATE projects SET scene_state = $1 WHERE id = $2",
-      [JSON.stringify(sceneState), id]
+      `UPDATE projects
+       SET scene_state = $1,
+           pattern_state = CASE WHEN $2::jsonb IS NULL THEN pattern_state ELSE $2::jsonb END
+       WHERE id = $3`,
+      [JSON.stringify(Array.isArray(sceneState) ? sceneState : []), normalizedPatternState ? JSON.stringify(normalizedPatternState) : null, id]
     );
 
     res.json({ message: "Сцена успешно сохранена" });

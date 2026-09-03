@@ -22,6 +22,7 @@ interface SceneStateItem {
 interface STLModel extends SceneStateItem {
   name?: string;
   url: string;
+  legacyId?: ModelId;
 }
 
 interface TextNote {
@@ -108,6 +109,7 @@ const getCircleGeometry = (points: Point[]) => {
 
 const buildDefaultModel = (model: Partial<STLModel>): STLModel => ({
   id: model.id ?? '',
+  legacyId: model.legacyId,
   name: model.name,
   url: model.url ?? '',
   visible: true, 
@@ -131,14 +133,18 @@ const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: unknown): 
   
   return files.map((file) => {
     const defaults = buildDefaultModel(file);
-    // Приводим ID к строке для 100% точного совпадения
-    const saved = safeState.find((item) => String(item.id) === String(defaults.id));
+    const saved = safeState.find((item) => String(item.id) === String(defaults.id))
+      ?? (defaults.legacyId === undefined
+        ? undefined
+        : safeState.find((item) => String(item.id) === String(defaults.legacyId)));
     
     if (!saved) return defaults;
     
     return {
       ...defaults,
       ...saved,
+      id: defaults.id,
+      legacyId: defaults.legacyId,
       color: saved.color || defaults.color,
       opacity: saved.opacity !== undefined ? clampOpacity(Number(saved.opacity)) : defaults.opacity,
       position: Array.isArray(saved.position) ? (saved.position as Vector3Tuple) : defaults.position,

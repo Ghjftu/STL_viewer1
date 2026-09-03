@@ -64,7 +64,9 @@ export const AdminDashboard: React.FC = () => {
 
   // States for file management (STL)
   const [existingFiles, setExistingFiles] = useState<any[]>([]);
+  const [existingPatterns, setExistingPatterns] = useState<any[]>([]);
   const [newFiles, setNewFiles] = useState<FileList | null>(null);
+  const [newPatternFiles, setNewPatternFiles] = useState<FileList | null>(null);
   const [loading, setLoading] = useState(false);
 
   // NEW: States for sketch import
@@ -344,6 +346,7 @@ export const AdminDashboard: React.FC = () => {
       })
       .then((data) => {
         if (data.stlFiles) setExistingFiles(data.stlFiles);
+        if (data.patterns) setExistingPatterns(data.patterns);
       })
       .catch(() => console.error('Ошибка загрузки деталей проекта'));
   };
@@ -427,6 +430,34 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const handleDeletePattern = async (patternId: string, patternName: string) => {
+    if (!editingProject || !window.confirm(`Удалить лекало ${patternName}?`)) return;
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/projects/${editingProject.id}/delete-pattern`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ patternId }),
+        }
+      );
+
+      if (res.status === 401 || res.status === 403) {
+        handleUnauthorized();
+        return;
+      }
+
+      if (res.ok) {
+        setExistingPatterns((previous) => previous.filter((pattern) => pattern.id !== patternId));
+      } else {
+        alert('Ошибка при удалении лекала');
+      }
+    } catch {
+      alert('Ошибка сети');
+    }
+  };
+
   // Updated update handler with file upload support and transliteration
   const handleUpdateProject = async () => {
     if (!editingProject) return;
@@ -444,6 +475,10 @@ export const AdminDashboard: React.FC = () => {
     if (newFiles) {
       const filesToSend = getTransliteratedFiles(newFiles);
       filesToSend.forEach((file) => data.append('files', file));
+    }
+
+    if (newPatternFiles) {
+      Array.from(newPatternFiles).forEach((file) => data.append('patterns', file));
     }
 
     try {
@@ -464,6 +499,7 @@ export const AdminDashboard: React.FC = () => {
       if (res.ok) {
         setEditModalOpen(false);
         setNewFiles(null);
+        setNewPatternFiles(null);
         fetchProjects();
         alert('Проект успешно обновлен!');
       } else {
@@ -598,6 +634,9 @@ export const AdminDashboard: React.FC = () => {
     setMenuProjectId(null);
     setEditingProject(project);
     setExistingFiles([]);
+    setExistingPatterns([]);
+    setNewFiles(null);
+    setNewPatternFiles(null);
     fetchProjectDetails(project.id);
     setEditModalOpen(true);
   };
@@ -1428,6 +1467,46 @@ const tableClass = isDarkTheme
               )}
             </div>
 
+            <div className={`mb-6 rounded-2xl border p-4 ${
+              isDarkTheme ? 'border-neutral-700 bg-neutral-950/60' : 'border-slate-200 bg-slate-50'
+            }`}>
+              <label className={`mb-2 block text-xs font-black ${secondaryTextClass}`}>
+                Лекала
+              </label>
+              {existingPatterns.length === 0 ? (
+                <p className={`mb-3 text-sm ${mutedTextClass}`}>Нет загруженных лекал</p>
+              ) : (
+                <ul className="mb-3 max-h-40 space-y-2 overflow-y-auto">
+                  {existingPatterns.map((pattern) => (
+                    <li key={pattern.id} className={`flex items-center gap-3 rounded-xl p-2 ${isDarkTheme ? 'bg-neutral-800' : 'bg-white'}`}>
+                      <img src={pattern.url} alt="" className="h-10 w-10 shrink-0 rounded-lg bg-black/30 object-contain" />
+                      <span className="min-w-0 flex-1 truncate text-sm" title={pattern.name}>{pattern.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePattern(pattern.id, pattern.name)}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-rose-50 text-xs font-black text-rose-600 transition hover:bg-rose-100"
+                        title="Удалить лекало"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <input
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml"
+                onChange={(event) => setNewPatternFiles(event.target.files)}
+                className={`w-full text-sm ${secondaryTextClass} file:mb-2 file:mr-4 file:rounded-full file:border-0 file:px-4 file:py-2 file:text-sm file:font-black file:text-white sm:file:mb-0 ${
+                  isDarkTheme ? 'file:bg-neutral-700' : 'file:bg-slate-800'
+                }`}
+              />
+              <p className={`mt-2 text-xs ${mutedTextClass}`}>
+                PNG, JPG, WebP или SVG. Фон будет удалён автоматически.
+              </p>
+            </div>
+
             {/* NEW: Sketch import section */}
             <div className={`mb-6 rounded-2xl border p-4 ${
               isDarkTheme ? 'border-neutral-700 bg-neutral-950/60' : 'border-slate-200 bg-slate-50'
@@ -1467,6 +1546,7 @@ const tableClass = isDarkTheme
                 onClick={() => {
                   setEditModalOpen(false);
                   setNewFiles(null);
+                  setNewPatternFiles(null);
                   setSketchFiles(null);
                 }}
                 className={`rounded-full px-4 py-3 text-sm font-black transition sm:py-2 ${

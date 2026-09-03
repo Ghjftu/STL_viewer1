@@ -19,7 +19,13 @@ const sanitizePathSegment = (segment, fallback) => {
 const createProjectPath = (country, city, clinic, department, doctor, patient, projectId) => {
     const targetPath = path_1.default.join(exports.STORAGE_DIR, sanitizePathSegment(country, 'Unknown_Country'), sanitizePathSegment(city, 'Unknown_City'), sanitizePathSegment(clinic, 'Unknown_Clinic'), sanitizePathSegment(department, 'Unknown_Department'), sanitizePathSegment(doctor, 'Unknown_Doctor'), sanitizePathSegment(patient, 'Unknown_Patient'), sanitizePathSegment(projectId, 'Unknown_Project'));
     // Создаем подпапки
-    const subfolders = ['stl', 'sketches', 'tz'];
+    const subfolders = [
+        'stl',
+        'sketches',
+        'tz',
+        path_1.default.join('patterns', 'originals'),
+        path_1.default.join('patterns', 'processed'),
+    ];
     if (!fs_1.default.existsSync(targetPath)) {
         fs_1.default.mkdirSync(targetPath, { recursive: true });
     }

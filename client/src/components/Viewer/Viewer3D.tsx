@@ -47,6 +47,29 @@ interface STLModel extends SceneStateItem {
   name: string;
   url: string;
   group: string;
+  legacyId?: ModelId;
+}
+
+interface PatternStateItem {
+  id: string;
+  visible: boolean;
+  opacity: number;
+  x: number;
+  y: number;
+  scale: number;
+  contrast: number;
+  color: string;
+}
+
+interface PatternAsset {
+  id: string;
+  name: string;
+  url: string;
+  width: number;
+  height: number;
+}
+
+interface PatternItem extends PatternAsset, PatternStateItem {
 }
 
 interface ProjectData {
@@ -54,11 +77,13 @@ interface ProjectData {
   doctor_display_name?: string;
   is_public?: boolean;
   scene_state?: string | SceneStateItem[];
+  pattern_state?: string | PatternStateItem[];
 }
 
 interface ApiProjectResponse {
   project?: ProjectData;
   stlFiles?: Partial<STLModel>[];
+  patterns?: PatternAsset[];
 }
 
 interface CameraParams {
@@ -88,6 +113,7 @@ const VisibilityIcon: React.FC<{ visible: boolean }> = ({ visible }) => (
 );
 
 const getSceneStorageKey = (projectId: string) => `viewer3d:scene:${projectId}`;
+const getPatternStorageKey = (projectId: string) => `viewer3d:patterns:${projectId}`;
 
 const getStoredSceneState = (projectId: string): SceneStateItem[] => {
   try {
@@ -98,6 +124,12 @@ const getStoredSceneState = (projectId: string): SceneStateItem[] => {
 };
 
 const clampOpacity = (value: number) => Math.min(1, Math.max(0, value));
+const clampPatternScale = (value: number) => Number.isFinite(value) ? Math.min(5, Math.max(0.25, value)) : 1;
+const clampPatternContrast = (value: number) => Number.isFinite(value) ? Math.min(3, Math.max(0.5, value)) : 1.15;
+const clampNormalizedPosition = (value: number) => Number.isFinite(value) ? Math.min(0.98, Math.max(0.02, value)) : 0.5;
+const normalizePatternColor = (value: unknown) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+  ? value
+  : '#ffffff';
 
 const isMeasurementDrawing = (drawing: Drawing): drawing is MeasurementDrawing =>
   drawing.type === 'ruler' || drawing.type === 'angle' || drawing.type === 'circle';
@@ -113,8 +145,28 @@ const parseSceneState = (value: unknown): SceneStateItem[] => {
   }
 };
 
+const parsePatternState = (value: unknown): PatternStateItem[] => {
+  if (!value) return [];
+
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const getStoredPatternState = (projectId: string): PatternStateItem[] => {
+  try {
+    return parsePatternState(localStorage.getItem(getPatternStorageKey(projectId)));
+  } catch {
+    return [];
+  }
+};
+
 const buildDefaultModel = (file: Partial<STLModel>): STLModel => ({
   id: file.id ?? '',
+  legacyId: file.legacyId,
   name: file.name ?? '',
   url: file.url ?? '',
   visible: file.visible ?? true,
@@ -133,12 +185,28 @@ const serializeSceneState = (models: STLModel[]): SceneStateItem[] =>
     opacity: clampOpacity(model.opacity),
     position: model.position,
     rotation: model.rotation,
+    group: model.group,
+  }));
+
+const serializePatternState = (patterns: PatternItem[]): PatternStateItem[] =>
+  patterns.map((pattern) => ({
+    id: pattern.id,
+    visible: pattern.visible,
+    opacity: clampOpacity(pattern.opacity),
+    x: clampNormalizedPosition(pattern.x),
+    y: clampNormalizedPosition(pattern.y),
+    scale: clampPatternScale(pattern.scale),
+    contrast: clampPatternContrast(pattern.contrast),
+    color: normalizePatternColor(pattern.color),
   }));
 
 const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: SceneStateItem[]): STLModel[] =>
   files.map((file) => {
     const defaults = buildDefaultModel(file);
-    const saved = sceneState.find((item) => item.id === defaults.id);
+    const saved = sceneState.find((item) => String(item.id) === String(defaults.id))
+      ?? (defaults.legacyId === undefined
+        ? undefined
+        : sceneState.find((item) => String(item.id) === String(defaults.legacyId)));
 
     if (!saved) {
       return defaults;
@@ -147,9 +215,43 @@ const mergeModelsWithState = (files: Partial<STLModel>[], sceneState: SceneState
     return {
       ...defaults,
       ...saved,
+      id: defaults.id,
+      legacyId: defaults.legacyId,
       opacity: clampOpacity(saved.opacity),
       position: Array.isArray(saved.position) ? saved.position : defaults.position,
       rotation: Array.isArray(saved.rotation) ? saved.rotation : defaults.rotation,
+    };
+  });
+
+const buildDefaultPattern = (asset: PatternAsset, index: number): PatternItem => ({
+  ...asset,
+  visible: true,
+  opacity: 1,
+  x: Math.min(0.8, 0.5 + index * 0.025),
+  y: Math.min(0.8, 0.5 + index * 0.025),
+  scale: 1,
+  contrast: 1.15,
+  color: '#ffffff',
+});
+
+const mergePatternsWithState = (assets: PatternAsset[], state: PatternStateItem[]): PatternItem[] =>
+  assets.map((asset, index) => {
+    const defaults = buildDefaultPattern(asset, index);
+    const saved = state.find((item) => item.id === asset.id);
+    if (!saved) return defaults;
+    const usesLegacyAppearanceDefaults = !Number.isFinite(Number(saved.contrast)) && normalizePatternColor(saved.color) === '#ffffff';
+
+    return {
+      ...defaults,
+      visible: saved.visible !== false,
+      opacity: usesLegacyAppearanceDefaults && Number(saved.opacity) === 0.8
+        ? 1
+        : clampOpacity(Number(saved.opacity)),
+      x: clampNormalizedPosition(Number(saved.x)),
+      y: clampNormalizedPosition(Number(saved.y)),
+      scale: clampPatternScale(Number(saved.scale)),
+      contrast: clampPatternContrast(Number(saved.contrast)),
+      color: normalizePatternColor(saved.color),
     };
   });
 
@@ -486,6 +588,142 @@ const ModelNormalizer: React.FC<{
   return null;
 };
 
+const PatternOverlay: React.FC<{
+  patterns: PatternItem[];
+  activePatternId: string | null;
+}> = ({ patterns, activePatternId }) => {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden" aria-hidden="true">
+      {patterns.map((pattern) => {
+        if (!pattern.visible) return null;
+        const selected = pattern.id === activePatternId;
+
+        return (
+          <div
+            key={pattern.id}
+            className="pointer-events-none absolute select-none"
+            style={{
+              left: `${pattern.x * 100}%`,
+              top: `${pattern.y * 100}%`,
+              width: 'min(44vw, 560px)',
+              maxWidth: '74vw',
+              transform: `translate(-50%, -50%) scale(${pattern.scale})`,
+              transformOrigin: 'center',
+              opacity: pattern.opacity,
+              zIndex: selected ? 2 : 1,
+              filter: selected
+                ? 'drop-shadow(0 0 4px rgba(255,255,255,.95))'
+                : 'drop-shadow(0 0 0 rgba(255,255,255,0))',
+              transition: selected ? 'filter 45ms ease-out' : 'filter 180ms ease-in',
+            }}
+          >
+            <svg
+              viewBox={`0 0 ${pattern.width} ${pattern.height}`}
+              className="block h-auto w-full overflow-visible"
+              role="presentation"
+            >
+              <defs>
+                <filter
+                  id={`pattern-appearance-${pattern.id}`}
+                  x="-10%"
+                  y="-10%"
+                  width="120%"
+                  height="120%"
+                  colorInterpolationFilters="sRGB"
+                >
+                  <feComponentTransfer in="SourceAlpha" result="contrastedAlpha">
+                    <feFuncA type="linear" slope={pattern.contrast} intercept="0" />
+                  </feComponentTransfer>
+                  <feFlood floodColor={pattern.color} result="patternColor" />
+                  <feComposite in="patternColor" in2="contrastedAlpha" operator="in" />
+                </filter>
+              </defs>
+              <image
+                href={pattern.url}
+                width={pattern.width}
+                height={pattern.height}
+                preserveAspectRatio="xMidYMid meet"
+                filter={`url(#pattern-appearance-${pattern.id})`}
+              />
+            </svg>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const PatternTrackpad: React.FC<{
+  pattern: PatternItem;
+  accentColor: string;
+  onChange: (patch: Partial<PatternStateItem>) => void;
+  onInteractionStart: () => void;
+  onInteractionEnd: () => void;
+}> = ({ pattern, accentColor, onChange, onInteractionStart, onInteractionEnd }) => {
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: pattern.x,
+      startY: pattern.y,
+    };
+    onInteractionStart();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    onChange({
+      x: clampNormalizedPosition(drag.startX + (event.clientX - drag.startClientX) / rect.width),
+      y: clampNormalizedPosition(drag.startY + (event.clientY - drag.startClientY) / rect.width),
+    });
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const finishDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    onInteractionEnd();
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  return (
+    <div
+      role="application"
+      aria-label={`Трекпад перемещения лекала ${pattern.name}`}
+      className="relative h-20 w-full cursor-crosshair overflow-hidden rounded-xl border border-white/12 bg-black/35 touch-none"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+    >
+      <div className="pointer-events-none absolute left-1/2 top-0 h-full w-px bg-white/7" />
+      <div className="pointer-events-none absolute left-0 top-1/2 h-px w-full bg-white/7" />
+      <div
+        className="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-md"
+        style={{ left: `${pattern.x * 100}%`, top: `${pattern.y * 100}%`, backgroundColor: accentColor }}
+      />
+    </div>
+  );
+};
+
 const Viewer3DScene: React.FC<{
   projectId: string;
   currentPath: string;
@@ -493,6 +731,8 @@ const Viewer3DScene: React.FC<{
 }> = ({ projectId, currentPath, navigate }) => {
   const [project, setProject] = useState<ProjectData | null>(null);
   const [stlModels, setStlModels] = useState<STLModel[]>([]);
+  const [patterns, setPatterns] = useState<PatternItem[]>([]);
+  const [activePatternId, setActivePatternId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState('');
   const [activeTool, setActiveTool] = useState<ToolType>('none');
@@ -515,6 +755,7 @@ const Viewer3DScene: React.FC<{
   const modelsLoading = loadingState.loading;
 
   const settingsPanelRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const controlsRef = useRef<any>(null);
   const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
@@ -523,7 +764,9 @@ const Viewer3DScene: React.FC<{
   const modelsGroupRef = useRef<THREE.Group>(null);
   const lastTouchEndTimeRef = useRef(0);
   const latestModelsRef = useRef<STLModel[]>([]);
+  const latestPatternsRef = useRef<PatternItem[]>([]);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const patternInteractionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentPointsRef = useRef<Point[]>([]);
   const activePointerIdRef = useRef<number | null>(null);
   const activeTouchPointersRef = useRef<Set<number>>(new Set());
@@ -547,6 +790,43 @@ const Viewer3DScene: React.FC<{
     []
   );
 
+  const clearPatternInteraction = useCallback(() => {
+    if (patternInteractionTimeoutRef.current) {
+      clearTimeout(patternInteractionTimeoutRef.current);
+      patternInteractionTimeoutRef.current = null;
+    }
+    setActivePatternId(null);
+  }, []);
+
+  const beginPatternInteraction = useCallback((patternId: string) => {
+    if (patternInteractionTimeoutRef.current) {
+      clearTimeout(patternInteractionTimeoutRef.current);
+      patternInteractionTimeoutRef.current = null;
+    }
+    setActivePatternId(patternId);
+  }, []);
+
+  const endPatternInteraction = useCallback(() => {
+    if (patternInteractionTimeoutRef.current) {
+      clearTimeout(patternInteractionTimeoutRef.current);
+    }
+    patternInteractionTimeoutRef.current = setTimeout(() => {
+      patternInteractionTimeoutRef.current = null;
+      setActivePatternId(null);
+    }, 90);
+  }, []);
+
+  const markPatternInteraction = useCallback((patternId: string) => {
+    beginPatternInteraction(patternId);
+    endPatternInteraction();
+  }, [beginPatternInteraction, endPatternInteraction]);
+
+  useEffect(() => () => {
+    if (patternInteractionTimeoutRef.current) {
+      clearTimeout(patternInteractionTimeoutRef.current);
+    }
+  }, []);
+
   const persistSceneStateLocally = useCallback(
     (models: STLModel[]) => {
       try {
@@ -558,8 +838,19 @@ const Viewer3DScene: React.FC<{
     [projectId]
   );
 
+  const persistPatternStateLocally = useCallback(
+    (nextPatterns: PatternItem[]) => {
+      try {
+        localStorage.setItem(getPatternStorageKey(projectId), JSON.stringify(serializePatternState(nextPatterns)));
+      } catch {
+        // Local cache is only a fallback when the server is unavailable.
+      }
+    },
+    [projectId]
+  );
+
   const flushSceneStateToServer = useCallback(
-    (models: STLModel[], keepalive = false) => {
+    (models: STLModel[], nextPatterns: PatternItem[], keepalive = false) => {
       const token = getAuthToken();
       if (!token) return;
 
@@ -567,22 +858,26 @@ const Viewer3DScene: React.FC<{
         method: 'PUT',
         keepalive,
         headers: getAuthHeaders(),
-        body: JSON.stringify({ sceneState: serializeSceneState(models) }),
+        body: JSON.stringify({
+          sceneState: serializeSceneState(models),
+          patternState: serializePatternState(nextPatterns),
+        }),
       }).catch((err) => console.error("Ошибка сохранения:", err));
     },
     [projectId]
   );
 
   const scheduleSceneStateSync = useCallback(
-    (models: STLModel[]) => {
+    (models: STLModel[], nextPatterns: PatternItem[]) => {
       latestModelsRef.current = models;
+      latestPatternsRef.current = nextPatterns;
 
       if (syncTimeoutRef.current) {
         clearTimeout(syncTimeoutRef.current);
       }
 
       syncTimeoutRef.current = setTimeout(() => {
-        flushSceneStateToServer(latestModelsRef.current);
+        flushSceneStateToServer(latestModelsRef.current, latestPatternsRef.current);
       }, SCENE_SAVE_DELAY_MS);
     },
     [flushSceneStateToServer]
@@ -786,29 +1081,38 @@ const Viewer3DScene: React.FC<{
         const localSceneState = getStoredSceneState(projectId);
         const sceneState = serverSceneState.length > 0 ? serverSceneState : localSceneState;
         const mergedModels = mergeModelsWithState(data.stlFiles ?? [], sceneState);
+        const serverPatternState = parsePatternState(data.project.pattern_state);
+        const localPatternState = getStoredPatternState(projectId);
+        const patternState = serverPatternState.length > 0 ? serverPatternState : localPatternState;
+        const mergedPatterns = mergePatternsWithState(data.patterns ?? [], patternState);
 
         latestModelsRef.current = mergedModels;
+        latestPatternsRef.current = mergedPatterns;
         transparentGroupRefs.current = new Array(mergedModels.length).fill(null);
         persistSceneStateLocally(mergedModels);
+        persistPatternStateLocally(mergedPatterns);
         setStlModels(mergedModels);
+        setPatterns(mergedPatterns);
+        clearPatternInteraction();
       })
       .catch(() => undefined)
       .finally(() => {
         setLoading(false);
       });
-  }, [currentPath, navigate, persistSceneStateLocally, projectId]);
+  }, [clearPatternInteraction, currentPath, navigate, persistPatternStateLocally, persistSceneStateLocally, projectId]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (!showModelSettings || !settingsPanelRef.current) return;
-      if (!settingsPanelRef.current.contains(event.target as Node)) {
-        setShowModelSettings(false);
-      }
+      const target = event.target as Node;
+      if (settingsPanelRef.current.contains(target) || settingsButtonRef.current?.contains(target)) return;
+      setShowModelSettings(false);
+      clearPatternInteraction();
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showModelSettings]);
+  }, [clearPatternInteraction, showModelSettings]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -817,8 +1121,8 @@ const Viewer3DScene: React.FC<{
         syncTimeoutRef.current = null;
       }
 
-      if (latestModelsRef.current.length > 0) {
-        flushSceneStateToServer(latestModelsRef.current, true);
+      if (latestModelsRef.current.length > 0 || latestPatternsRef.current.length > 0) {
+        flushSceneStateToServer(latestModelsRef.current, latestPatternsRef.current, true);
       }
     };
 
@@ -863,7 +1167,7 @@ const Viewer3DScene: React.FC<{
       );
 
       persistSceneStateLocally(updatedModels);
-      scheduleSceneStateSync(updatedModels);
+      scheduleSceneStateSync(updatedModels, latestPatternsRef.current);
       return updatedModels;
     });
   };
@@ -875,7 +1179,7 @@ const Viewer3DScene: React.FC<{
       );
 
       persistSceneStateLocally(updatedModels);
-      scheduleSceneStateSync(updatedModels);
+      scheduleSceneStateSync(updatedModels, latestPatternsRef.current);
       return updatedModels;
     });
   };
@@ -890,8 +1194,62 @@ const Viewer3DScene: React.FC<{
       );
 
       persistSceneStateLocally(updatedModels);
-      scheduleSceneStateSync(updatedModels);
+      scheduleSceneStateSync(updatedModels, latestPatternsRef.current);
       return updatedModels;
+    });
+  };
+
+  const updatePattern = useCallback((patternId: string, patch: Partial<PatternStateItem>) => {
+    setPatterns((previousPatterns) => {
+      const updatedPatterns = previousPatterns.map((pattern) => {
+        if (pattern.id !== patternId) return pattern;
+        return {
+          ...pattern,
+          ...patch,
+          opacity: patch.opacity === undefined ? pattern.opacity : clampOpacity(Number(patch.opacity)),
+          scale: patch.scale === undefined ? pattern.scale : clampPatternScale(Number(patch.scale)),
+          contrast: patch.contrast === undefined ? pattern.contrast : clampPatternContrast(Number(patch.contrast)),
+          color: patch.color === undefined ? pattern.color : normalizePatternColor(patch.color),
+          x: patch.x === undefined ? pattern.x : clampNormalizedPosition(Number(patch.x)),
+          y: patch.y === undefined ? pattern.y : clampNormalizedPosition(Number(patch.y)),
+        };
+      });
+
+      latestPatternsRef.current = updatedPatterns;
+      persistPatternStateLocally(updatedPatterns);
+      scheduleSceneStateSync(latestModelsRef.current, updatedPatterns);
+      return updatedPatterns;
+    });
+  }, [persistPatternStateLocally, scheduleSceneStateSync]);
+
+  const resetPattern = (patternId: string) => {
+    setPatterns((previousPatterns) => {
+      const updatedPatterns = previousPatterns.map((pattern, index) =>
+        pattern.id === patternId ? buildDefaultPattern(pattern, index) : pattern
+      );
+      latestPatternsRef.current = updatedPatterns;
+      persistPatternStateLocally(updatedPatterns);
+      scheduleSceneStateSync(latestModelsRef.current, updatedPatterns);
+      return updatedPatterns;
+    });
+    markPatternInteraction(patternId);
+  };
+
+  const toggleObjectTree = () => {
+    if (showModelSettings) {
+      clearPatternInteraction();
+    }
+    setShowModelSettings((previous) => !previous);
+  };
+
+  const toggleAllPatternsVisibility = () => {
+    setPatterns((previousPatterns) => {
+      const nextVisibility = !previousPatterns.some((pattern) => pattern.visible);
+      const updatedPatterns = previousPatterns.map((pattern) => ({ ...pattern, visible: nextVisibility }));
+      latestPatternsRef.current = updatedPatterns;
+      persistPatternStateLocally(updatedPatterns);
+      scheduleSceneStateSync(latestModelsRef.current, updatedPatterns);
+      return updatedPatterns;
     });
   };
 
@@ -1471,6 +1829,11 @@ const Viewer3DScene: React.FC<{
           <CameraParamsUpdater cameraRef={cameraRef} onUpdate={handleCameraUpdate} />
         </Canvas>
 
+        <PatternOverlay
+          patterns={patterns}
+          activePatternId={activePatternId}
+        />
+
         <div
           className="rough-glass rough-glass-dark absolute left-1/2 top-3 z-20 hidden max-w-[calc(100%-7rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-full px-4 py-2 text-white sm:flex"
           data-ui-control="true"
@@ -1507,9 +1870,10 @@ const Viewer3DScene: React.FC<{
 )}
 
         <button
-          onClick={() => setShowModelSettings((previous) => !previous)}
+          ref={settingsButtonRef}
+          onClick={toggleObjectTree}
           className="rough-glass rough-glass-dark absolute right-3 top-3 z-30 flex h-10 w-10 items-center justify-center rounded-full text-lg text-white transition hover:border-white/30"
-          title="Настройки моделей"
+          title="Дерево объектов"
         >
           <SettingsIcon className="h-5 w-5" />
         </button>
@@ -1520,7 +1884,7 @@ const Viewer3DScene: React.FC<{
             className="rough-glass rough-glass-dark absolute right-3 top-16 z-30 flex max-h-[80vh] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-[1.5rem] p-4"
             data-ui-control="true"
           >
-            <h3 className="mb-3 shrink-0 border-b border-white/10 pb-2 text-lg font-black">Модели</h3>
+            <h3 className="mb-3 shrink-0 border-b border-white/10 pb-2 text-lg font-black">Объекты</h3>
             <div className="ui-dark-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-1">
               {Object.entries(
                 stlModels.reduce((acc, model) => {
@@ -1564,7 +1928,7 @@ const Viewer3DScene: React.FC<{
                             </button>
                           </div>
                           <div className="mb-2 flex items-center gap-3">
-                            <span className="w-12 text-xs text-gray-400">Color</span>
+                            <span className="w-20 text-xs text-gray-400">Цвет</span>
                             <input
                               type="color"
                               value={model.color}
@@ -1573,7 +1937,7 @@ const Viewer3DScene: React.FC<{
                             />
                           </div>
                           <div className="flex items-center gap-3">
-                            <span className="w-12 text-xs text-gray-400">Opacity</span>
+                            <span className="w-20 text-xs text-gray-400">Прозрачность</span>
                             <input
                               type="range"
                               min="0"
@@ -1592,6 +1956,156 @@ const Viewer3DScene: React.FC<{
                   </div>
                 );
               })}
+
+              {patterns.length > 0 && (
+                <div className="border-t border-white/10 pt-4">
+                  <div className="mb-2 flex items-center justify-between rounded-xl bg-white/7 p-2">
+                    <div>
+                      <h4 className="font-black" style={{ color: currentAccent.color }}>Лекала</h4>
+                    </div>
+                    <button
+                      onClick={toggleAllPatternsVisibility}
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
+                        patterns.some((pattern) => pattern.visible) ? 'text-neutral-100 hover:bg-white/10' : 'text-neutral-500 hover:bg-white/6'
+                      }`}
+                      title={patterns.some((pattern) => pattern.visible) ? 'Скрыть все лекала' : 'Показать все лекала'}
+                    >
+                      <VisibilityIcon visible={patterns.some((pattern) => pattern.visible)} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 border-l-2 border-white/10 pl-2">
+                    {patterns.map((pattern) => {
+                      return (
+                        <div
+                          key={pattern.id}
+                          className="rounded-xl bg-black/20 p-3 ring-1 ring-white/8"
+                        >
+                          <div className="mb-2 flex items-center gap-2">
+                            <div
+                              className="min-w-0 flex-1 truncate text-sm font-semibold text-white"
+                              title={pattern.name}
+                            >
+                              {pattern.name}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => resetPattern(pattern.id)}
+                              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-neutral-400 transition hover:bg-white/10 hover:text-white"
+                              title="Сбросить лекало"
+                            >
+                              ↺
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updatePattern(pattern.id, { visible: !pattern.visible })}
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
+                                pattern.visible ? 'text-neutral-100 hover:bg-white/10' : 'text-neutral-500 hover:bg-white/6'
+                              }`}
+                              title={pattern.visible ? 'Скрыть лекало' : 'Показать лекало'}
+                            >
+                              <VisibilityIcon visible={pattern.visible} />
+                            </button>
+                          </div>
+
+                          <div className="mb-4">
+                            <PatternTrackpad
+                              pattern={pattern}
+                              accentColor={currentAccent.color}
+                              onInteractionStart={() => {
+                                setActiveTool('none');
+                                beginPatternInteraction(pattern.id);
+                              }}
+                              onInteractionEnd={endPatternInteraction}
+                              onChange={(patch) => updatePattern(pattern.id, patch)}
+                            />
+                          </div>
+
+                          <div className="space-y-4">
+                          <div className="flex items-center gap-3">
+                            <span className="w-16 text-xs text-gray-400">Прозр.</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={pattern.opacity}
+                              onChange={(event) => updatePattern(pattern.id, { opacity: Number(event.target.value) })}
+                              onPointerDown={() => beginPatternInteraction(pattern.id)}
+                              onPointerUp={endPatternInteraction}
+                              onPointerCancel={endPatternInteraction}
+                              onKeyDown={() => beginPatternInteraction(pattern.id)}
+                              onKeyUp={endPatternInteraction}
+                              onBlur={endPatternInteraction}
+                              className="min-w-0 flex-1"
+                              style={{ accentColor: currentAccent.color }}
+                            />
+                            <span className="w-9 text-right text-xs text-gray-300">{Math.round(pattern.opacity * 100)}%</span>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className="w-16 text-xs text-gray-400">Масштаб</span>
+                            <input
+                              type="range"
+                              min="0.25"
+                              max="5"
+                              step="0.05"
+                              value={pattern.scale}
+                              onChange={(event) => updatePattern(pattern.id, { scale: Number(event.target.value) })}
+                              onPointerDown={() => beginPatternInteraction(pattern.id)}
+                              onPointerUp={endPatternInteraction}
+                              onPointerCancel={endPatternInteraction}
+                              onKeyDown={() => beginPatternInteraction(pattern.id)}
+                              onKeyUp={endPatternInteraction}
+                              onBlur={endPatternInteraction}
+                              className="min-w-0 flex-1"
+                              style={{ accentColor: currentAccent.color }}
+                            />
+                            <span className="w-9 text-right text-xs text-gray-300">{Math.round(pattern.scale * 100)}%</span>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className="w-16 text-xs text-gray-400">Контраст</span>
+                            <input
+                              type="range"
+                              min="0.5"
+                              max="3"
+                              step="0.05"
+                              value={pattern.contrast}
+                              onChange={(event) => updatePattern(pattern.id, { contrast: Number(event.target.value) })}
+                              onPointerDown={() => beginPatternInteraction(pattern.id)}
+                              onPointerUp={endPatternInteraction}
+                              onPointerCancel={endPatternInteraction}
+                              onKeyDown={() => beginPatternInteraction(pattern.id)}
+                              onKeyUp={endPatternInteraction}
+                              onBlur={endPatternInteraction}
+                              className="min-w-0 flex-1"
+                              style={{ accentColor: currentAccent.color }}
+                            />
+                            <span className="w-9 text-right text-xs text-gray-300">{Math.round(pattern.contrast * 100)}%</span>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className="w-16 text-xs text-gray-400">Цвет</span>
+                            <input
+                              type="color"
+                              value={pattern.color}
+                              onChange={(event) => {
+                                updatePattern(pattern.id, { color: event.target.value });
+                                markPatternInteraction(pattern.id);
+                              }}
+                              className="h-8 w-8 cursor-pointer rounded border border-gray-600 bg-gray-900 p-0.5"
+                              title="Цвет лекала"
+                            />
+                          </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                </div>
+              )}
             </div>
           </div>
         )}

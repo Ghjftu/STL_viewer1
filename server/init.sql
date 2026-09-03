@@ -37,10 +37,25 @@ CREATE TABLE IF NOT EXISTS projects (
     doctor_display_name TEXT,
     is_public BOOLEAN DEFAULT FALSE,
     scene_state JSONB,
+    pattern_state JSONB DEFAULT '[]',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS pattern_state JSONB DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS project_patterns (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    original_name TEXT NOT NULL,
+    source_file_name TEXT NOT NULL,
+    processed_file_name TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS project_patterns_project_id_idx ON project_patterns(project_id);
 
 CREATE TABLE IF NOT EXISTS project_folders (
     id TEXT PRIMARY KEY,
